@@ -2,6 +2,56 @@
 Mantle Business Artifacts - Universal Service Library Release Notes
 
 ===========================================================================
+Release 1.0.2 - TBD
+===========================================================================
+
+Mantle Universal Service Library 1.0.2 is a minor new feature and bug fix
+release.
+
+This release is based on Moqui Framework TODO and mantle-udm TODO.
+
+New Features
+
+- Updated services in InventoryReportServices.xml to use new location for
+  the search#CountBySource service in the moqui-elasticsearch component;
+  note that this component is not needed for mantle-usl in general and is
+  not a dependency, but is needed for these services
+- Financial TimePeriod close now updated beginning and ending balances on
+  all existing subsequent time periods
+- On AcctgTrans (GL) posting beginning and ending balances for future
+  existing time periods now updated
+- Improved locking (avoid deadlocks, etc) and cleanups in GL posting
+- Added reopen#FinancialTimePeriod service to open closed fiscal time
+  periods, opposite of the corresponding open service; requires the
+  FISCAL_REOPEN permission
+- When posting an applied payment or payment application the receivable or
+  payable GL account is determined based on the corresponding invoice so
+  they always match
+- The approve#Order service now requires the ORDER_APPROVE permission
+- In add#OrderPartToShipment only item quantities not yet associated with a
+  Shipment (not shipped quantities) are added
+- OrderDisplayInfo now gets quantity not shipped, billed by item and part
+- On Pack Shipment when invoice is created it is no longer put in
+  Finalized status so it may be modified before Finalize and GL posting
+- When Asset.quantityOnHandTotal goes below zero now does an automatic
+  physical inventory found to get it back to zero
+- Service updates for UDM replacement of EmplPosition.exemptFlag by
+  taxExemptEnumId and taxFormId, and support for new
+  PayrollAdjustmentExempt entity
+- Changed create#PeriodWageAndTaxRecordsUsaIrs to
+  create#PeriodWageAndTaxRecords now that it handles tax forms more
+  generally with Employment.taxFormId, EmplPosition.taxFormId, and a new
+  defaultTaxFormId parameter
+
+Bug Fixes
+
+- Fixed issue with fiscal and other TimePeriod create when db time zone
+  was very different from user time zone, now uses db time zone for date
+  calculations
+- Fixed issue where GL TX for Payment not reversed on Undeliver status
+  transition (PmntDelivered to PmntPromised)
+
+===========================================================================
 Release 1.0.1 - 26 Mar 2016
 ===========================================================================
 

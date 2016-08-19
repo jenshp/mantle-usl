@@ -19,9 +19,20 @@ along with this software (see the LICENSE.md file). If not, see
 
     <!-- Artifact group for all of the Mantle REST API via the mantle resource (the root resource) -->
     <artifactGroups artifactGroupId="MANTLE_API" description="Moqui Tools REST API (via root resource)">
-        <artifacts artifactTypeEnumId="AT_REST_PATH" inheritAuthz="Y" artifactName="/mantle"/>
-        <authz userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+        <artifacts artifactTypeEnumId="AT_REST_PATH" artifactName="/mantle" inheritAuthz="Y"/>
+        <authz artifactAuthzId="MANTLE_API_ADMIN" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
     </artifactGroups>
+    <!-- Not enabled by default, risky having read/write access to all mantle data, here as an example for testing:
+    <moqui.security.ArtifactGroupMember artifactGroupId="MANTLE_API" artifactName="mantle\..*"
+            nameIsPattern="Y" artifactTypeEnumId="AT_ENTITY" inheritAuthz="Y"/>
+    -->
+
+    <!-- Special Permissions -->
+    <userPermissions userPermissionId="ORDER_APPROVE" description="Order Approve"/>
+    <userGroupPermissions userGroupId="ADMIN" userPermissionId="ORDER_APPROVE"/>
+
+    <userPermissions userPermissionId="FISCAL_REOPEN" description="Fiscal Period Reopen"/>
+    <userGroupPermissions userGroupId="ADMIN" userPermissionId="FISCAL_REOPEN"/>
 
     <!-- User organization entity filters; see mantle.party.PartyServices.setup#UserOrganizationInfo -->
     <moqui.security.EntityFilterSet entityFilterSetId="MANTLE_USER_ORG" description="User Organization Filters">
@@ -38,7 +49,7 @@ along with this software (see the LICENSE.md file). If not, see
         <filters entityName="mantle.party.time.TimePeriod" filterMap="[partyId:filterOrgIds]"/>
         <!-- PartyRelationship: toPartyId in filterOrgIds OR relationshipTypeEnumId != PrtEmployee -->
         <filters entityName="mantle.party.PartyRelationship"
-                filterMap="[_join:'or', _list:[[toPartyId:filterOrgIds, _comp='in'], [relationshipTypeEnumId:(filterOrgIds ? 'PrtEmployee' : null), _comp:'!=']]]"/>
+                filterMap="[_join:'or', _list:[[toPartyId:filterOrgIds, _comp:'in'], [relationshipTypeEnumId:(filterOrgIds ? 'PrtEmployee' : null), _comp:'!=']]]"/>
     </moqui.security.EntityFilterSet>
     <moqui.security.EntityFilterSet entityFilterSetId="MANTLE_ACTIVE_ORG" description="Active Organization Filters">
         <filters entityName="mantle.account.invoice.Invoice" joinOr="Y"
@@ -65,6 +76,16 @@ along with this software (see the LICENSE.md file). If not, see
             captureServiceName="mantle.account.FinancialAccountServices.capture#FinancialAccountPayment"
             releaseServiceName="mantle.account.FinancialAccountServices.release#FinancialAccountPayment"
             refundServiceName="mantle.account.FinancialAccountServices.refund#FinancialAccountPayment"/>
+
+    <!-- Service Jobs: Payroll Processing -->
+    <moqui.security.user.NotificationTopic topic="ProcessTimePeriodPay" description="Payroll Period Process Pay Completed"
+            typeString="success" showAlert="Y" persistOnSend="Y" receiveNotifications="Y"
+            titleTemplate="Process Pay Completed for Payroll Period ${parameters.timePeriodId} for pay date ${ec.l10n.format(results.payDate, '')}, total pay ${ec.l10n.format(results.totalPayAmount, '0.00')}"
+            errorTitleTemplate="Error in Process Pay for Payroll Period ${parameters.timePeriodId}: ${serviceCallRun.errors}"
+            linkTemplate=""/>
+    <moqui.service.job.ServiceJob jobName="ProcessTimePeriodPay" description="Process Pay for Payroll Period"
+            serviceName="mantle.humanres.PayrollServices.process#TimePeriodPay" topic="ProcessTimePeriodPay"/>
+
 
     <!-- Message templates for formatting common sets of entity fields (generally for a view-entity) -->
     <!-- NOTE: Other common message templates in CommonL10nData -->
