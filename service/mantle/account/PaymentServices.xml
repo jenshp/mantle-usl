@@ -380,7 +380,8 @@ along with this software (see the LICENSE.md file). If not, see
                 <exclude field-name="overrideGlAccountId"/><exclude field-name="acctgTransResultEnumId"/>
                 <exclude field-name="reconcileStatusId"/><exclude field-name="paymentMethodFileId"/></auto-parameters>
             <parameter name="paymentTypeEnumId" default-value="PtInvoicePayment"/>
-            <parameter name="statusId" default-value="PmntDelivered"/>
+            <parameter name="paymentStatusId" default-value="PmntDelivered"/>
+            <parameter name="statusId" default="paymentStatusId"/>
             <parameter name="amount" type="BigDecimal"><description>Defaults to invoice unpaid total</description></parameter>
             <parameter name="paymentInstrumentEnumId" default-value="PiCompanyCheck"/>
             <parameter name="effectiveDate" type="Timestamp" default="ec.user.nowTimestamp"/>
@@ -951,7 +952,8 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="paymentGatewayResponseId" from="captOut.paymentGatewayResponseId"/>
             <entity-find-one entity-name="mantle.account.method.PaymentGatewayResponse" value-field="paymentGatewayResponse"/>
             <if condition="paymentGatewayResponse?.resultSuccess == 'Y'"><then>
-                <service-call name="update#mantle.account.payment.Payment" in-map="[paymentId:payment.paymentId, statusId:'PmntDelivered']"/>
+                <service-call name="update#mantle.account.payment.Payment"
+                        in-map="[paymentId:payment.paymentId, effectiveDate:ec.user.nowTimestamp, statusId:'PmntDelivered']"/>
             </then><else>
                 <service-call name="update#mantle.account.payment.Payment" in-map="[paymentId:payment.paymentId, statusId:'PmntDeclined']"/>
             </else></if>
