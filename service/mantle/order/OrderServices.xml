@@ -45,6 +45,7 @@ h2. General Order Placement and eCommerce Usage
         </in-parameters>
         <out-parameters>
             <parameter name="orderHeader" type="Map"><auto-parameters entity-name="mantle.order.OrderHeader"/></parameter>
+            <parameter name="productStore" type="Map"/>
             <parameter name="statusItem" type="Map"><auto-parameters entity-name="moqui.basic.StatusItem"/></parameter>
             <parameter name="editableStatusIds" type="Set"><parameter name="statusId"/></parameter>
             <parameter name="orderEditable" type="Boolean"/>
@@ -94,6 +95,8 @@ h2. General Order Placement and eCommerce Usage
                 <parameter name="partNoParentOrderItemList" type="List"><parameter name="partOrderItem" type="Map">
                     <auto-parameters entity-name="mantle.order.OrderItem"/></parameter></parameter>
                 <parameter name="hasShippableItems" type="Boolean"/>
+                <parameter name="singleLot" type="Boolean"/>
+                <parameter name="newerInventory" type="Boolean"/>
                 <parameter name="shipmentMethodEnum" type="Map">
                     <auto-parameters entity-name="moqui.basic.Enumeration"/></parameter>
                 <parameter name="partPaymentList" type="List"><parameter name="partPayment" type="Map">
@@ -166,6 +169,8 @@ h2. General Order Placement and eCommerce Usage
             <log message="======== Order Master:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(headerMaster))}"/>
             -->
 
+            <set field="productStore" from="orderHeader.productStore"/>
+
             <set field="statusItem" from="orderHeader.status"/>
             <!-- NOTE: these statuses are fairly liberal, may want to restrict more in certain scenarios (such as customer changing an order) -->
             <set field="editableStatusIds" from="new HashSet(['OrderBeingChanged', 'OrderOpen', 'OrderRequested',
@@ -190,7 +195,7 @@ h2. General Order Placement and eCommerce Usage
                 <econdition field-name="changedEntityName" value="mantle.order.OrderItem"/>
                 <econdition field-name="changedFieldName" operator="in" value="quantity,unitAmount"/>
                 <econdition field-name="pkPrimaryValue" from="orderId"/>
-                <select-field field-name="changedFieldName,pkSecondaryValue,newValueText,oldValueText,changedByUserId,changedDate"/>
+                <select-field field-name="changedFieldName,pkSecondaryValue,newValueText,oldValueText,changeReason,changedByUserId,changedDate"/>
                 <order-by field-name="-changedDate"/>
             </entity-find>
 
@@ -206,11 +211,14 @@ h2. General Order Placement and eCommerce Usage
             <set field="shipmentIdSet" from="new TreeSet()"/>
             <set field="quantityNotShippedByItem" from="[:]"/>
             <set field="quantityNotShippedByPart" from="[:]"/>
-            <iterate list="orderItemList" entry="orderItem"><script>
-                def orderItemQuantity = (orderItem.quantity ?: 1) * (orderItem.selectedAmount ?: 1)
-                addToBigDecimalInMap(orderItem.orderItemSeqId, orderItemQuantity, quantityNotShippedByItem)
-                addToBigDecimalInMap(orderItem.orderPartSeqId, orderItemQuantity, quantityNotShippedByPart)
-            </script></iterate>
+            <script>
+                for (orderItem in orderItemList) {
+                    if (!(orderItem.product?.productTypeEnumId in ['PtAsset', 'PtDigitalAsset', 'PtAssetUse'])) continue
+                    def orderItemQuantity = (orderItem.quantity ?: 1) * (orderItem.selectedAmount ?: 1)
+                    addToBigDecimalInMap(orderItem.orderItemSeqId, orderItemQuantity, quantityNotShippedByItem)
+                    addToBigDecimalInMap(orderItem.orderPartSeqId, orderItemQuantity, quantityNotShippedByPart)
+                }
+            </script>
             <iterate list="shipmentItemSourceList" entry="shipmentItemSource"><script>
                 def curOrderItem = orderItemList.find({ it.orderItemSeqId == shipmentItemSource.orderItemSeqId })
                 shipmentIdSet.add(shipmentItemSource.shipmentId)
@@ -265,7 +273,7 @@ h2. General Order Placement and eCommerce Usage
             <entity-find-related value-field="orderHeader" relationship-name="mantle.order.OrderPart" list="orderPartList"/>
 
             <!-- get order info by part for more detailed display -->
-            <script>
+            <script><![CDATA[
             import org.moqui.entity.EntityList
             import org.moqui.entity.EntityValue
             import org.moqui.context.ExecutionContext
@@ -273,12 +281,21 @@ h2. General Order Placement and eCommerce Usage
 
             orderPartInfoList = []
             for (EntityValue orderPart in orderPartList) {
-                partOrderItemList = orderItemList.findAll({ it.orderPartSeqId == orderPart.orderPartSeqId })
-                partNoParentOrderItemList = partOrderItemList.findAll({ it.parentItemSeqId == null })
-                hasShippableItems = orderItemList.find({ it.product?.productTypeEnumId in ['PtAsset', 'PtDigitalAsset', 'PtAssetUse'] })
+                EntityList partOrderItemList = orderItemList.findAll({ it.orderPartSeqId == orderPart.orderPartSeqId })
+                EntityList partNoParentOrderItemList = partOrderItemList.findAll({ it.parentItemSeqId == null })
+                boolean hasShippableItems = orderItemList.find({ it.product?.productTypeEnumId in ['PtAsset', 'PtDigitalAsset', 'PtAssetUse'] }) != null
 
-                partPaymentList = paymentList.cloneList().filterByAnd([orderPartSeqId:orderPart.orderPartSeqId])
-                partPaymentInfoList = []
+                boolean singleLot = false
+                boolean newerInventory = false
+                if (hasShippableItems && orderPart.customerPartyId) {
+                    EntityList custSettingList = ec.entity.find("mantle.party.PartySetting").condition('partyId', orderPart.customerPartyId)
+                            .condition('partySettingTypeId', 'CustomerSetting').useCache(true).list()
+                    singleLot = custSettingList.find({ 'CsstSingleLot'.equals(it.settingValue) }) != null
+                    newerInventory = custSettingList.find({ 'CsstNewerInventory'.equals(it.settingValue) }) != null
+                }
+
+                def partPaymentList = paymentList.cloneList().filterByAnd([orderPartSeqId:orderPart.orderPartSeqId])
+                def partPaymentInfoList = []
                 BigDecimal paymentsTotal = 0
                 for (EntityValue partPayment in partPaymentList) {
                     paymentsTotal += (partPayment.amount ?: 0)
@@ -339,8 +356,8 @@ h2. General Order Placement and eCommerce Usage
                         .parameters([orderId:orderPart.orderId, orderPartSeqId:orderPart.orderPartSeqId]).call()
 
                 orderPartInfoList.add([orderPart:orderPart, partEditable:editableStatusIds.contains(orderPart.statusId),
-                        partOrderItemList:partOrderItemList,
-                        partNoParentOrderItemList:partNoParentOrderItemList, hasShippableItems:hasShippableItems,
+                        partOrderItemList:partOrderItemList, partNoParentOrderItemList:partNoParentOrderItemList,
+                        hasShippableItems:hasShippableItems, singleLot:singleLot, newerInventory:newerInventory,
                         shipmentMethodEnum:orderPart."ShipmentMethod#moqui.basic.Enumeration",
                         partPaymentList:partPaymentList, partPaymentInfoList:partPaymentInfoList,
                         paymentsTotal:paymentsTotal, partTotalUnpaid:partTotalUnpaid,
@@ -352,7 +369,7 @@ h2. General Order Placement and eCommerce Usage
                         partShipmentItemSourceList:partShipmentItemSourceList, partShipmentIdSet:partShipmentIdSet,
                         openReturnList:openReturnsResult.openReturnList])
             }
-            </script>
+            ]]></script>
             <!-- <log level="warn" message="======== OrderDisplayInfo orderPartInfoList: ${orderPartInfoList}"/> -->
         </actions>
     </service>
@@ -595,27 +612,29 @@ h2. General Order Placement and eCommerce Usage
         <in-parameters>
             <auto-parameters include="pk" required="true"/>
             <auto-parameters include="nonpk"/>
+            <parameter name="unitAmount_changeReason"/>
+            <parameter name="quantity_changeReason"/>
         </in-parameters>
         <actions>
             <entity-find-one entity-name="mantle.order.OrderItem" value-field="orderItem"/>
             <set field="productId" from="productId ?: orderItem.productId"/>
 
             <!-- calculate the price based on quantity, etc, -->
-            <if condition="!unitAmount &amp;&amp; productId">
+            <if condition="!unitAmount &amp;&amp; productId"><then>
                 <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"/>
                 <entity-find-related-one value-field="orderItem" relationship-name="mantle.order.OrderPart" to-value-field="orderPart"/>
 
                 <service-call name="mantle.product.PriceServices.get#ProductPrice" out-map="priceMap"
-                        in-map="[productId:productId, quantity:quantity, priceUomId:orderHeader.currencyUomId,
-                            productStoreId:orderHeader.productStoreId, customerPartyId:orderPart.customerPartyId,
-                            vendorPartyId:orderPart.vendorPartyId]"/>
+                              in-map="[productId:productId, quantity:quantity, priceUomId:orderHeader.currencyUomId,
+                                  productStoreId:orderHeader.productStoreId, customerPartyId:orderPart.customerPartyId,
+                                  vendorPartyId:orderPart.vendorPartyId]"/>
 
                 <set field="unitAmount" from="priceMap.price"/>
                 <set field="unitListPrice" from="priceMap.listPrice"/>
                 <set field="isModifiedPrice" value="N"/>
-
-                <else><set field="isModifiedPrice" value="Y"/></else>
-            </if>
+            </then><else>
+                <set field="isModifiedPrice" value="Y"/>
+            </else></if>
 
             <!-- on quantity changes adjust ShipmentItem/Source (only if some already exist) -->
             <if condition="quantity != null &amp;&amp; quantity != orderItem.quantity">
@@ -625,48 +644,46 @@ h2. General Order Placement and eCommerce Usage
                     <set field="sourceQuantityTotal" from="0"/>
                     <iterate list="shipmentItemSourceList" entry="shipmentItemSource">
                         <set field="sourceQuantityTotal" from="sourceQuantityTotal + shipmentItemSource.quantity"/></iterate>
-                    <if condition="quantity &gt; sourceQuantityTotal">
+                    <if condition="quantity &gt; sourceQuantityTotal"><then>
                         <set field="quantityIncrease" from="quantity - sourceQuantityTotal"/>
                         <!-- quantity increase, we don't know which shipment it should go on so just pick the first -->
                         <set field="shipmentItemSource" from="shipmentItemSourceList[0]"/>
                         <service-call name="update#mantle.shipment.ShipmentItemSource"
-                                in-map="[shipmentItemSourceId:shipmentItemSource.shipmentItemSourceId,
-                                    quantity:(shipmentItemSource.quantity + quantityIncrease),
-                                    quantityNotHandled:(shipmentItemSource.quantityNotHandled + quantityIncrease)]"/>
+                                      in-map="[shipmentItemSourceId:shipmentItemSource.shipmentItemSourceId,
+                                          quantity:(shipmentItemSource.quantity + quantityIncrease),
+                                          quantityNotHandled:(shipmentItemSource.quantityNotHandled + quantityIncrease)]"/>
 
                         <!-- also update ShipmentItem.quantity -->
                         <entity-find-one entity-name="mantle.shipment.ShipmentItem" value-field="shipmentItem">
                             <field-map field-name="shipmentId" from="shipmentItemSource.shipmentId"/>
                             <field-map field-name="productId" from="orderItem.productId"/></entity-find-one>
                         <service-call name="update#mantle.shipment.ShipmentItem"
-                                in-map="[shipmentId:shipmentItem.shipmentId, productId:shipmentItem.productId,
-                                    quantity:(shipmentItem.quantity + quantityIncrease)]"/>
+                                      in-map="[shipmentId:shipmentItem.shipmentId, productId:shipmentItem.productId,
+                                          quantity:(shipmentItem.quantity + quantityIncrease)]"/>
+                    </then><else>
+                        <!-- a little more fun, deduct as available from each item in the list until all handled -->
+                        <set field="quantityReduceRemaining" from="sourceQuantityTotal - quantity"/>
+                        <iterate list="shipmentItemSourceList" entry="shipmentItemSource">
+                            <set field="quantityReduce" from="quantityReduceRemaining &gt; shipmentItemSource.quantityNotHandled ?
+                                    shipmentItemSource.quantityNotHandled : quantityReduceRemaining"/>
+                            <if condition="quantityReduce == 0"><break/></if>
+                            <service-call name="update#mantle.shipment.ShipmentItemSource"
+                                    in-map="[shipmentItemSourceId:shipmentItemSource.shipmentItemSourceId,
+                                        quantity:(shipmentItemSource.quantity - quantityReduce),
+                                        quantityNotHandled:(shipmentItemSource.quantityNotHandled - quantityReduce)]"/>
+                            <set field="quantityReduceRemaining" from="quantityReduceRemaining - quantityReduce"/>
 
-                        <else>
-                            <!-- a little more fun, deduct as available from each item in the list until all handled -->
-                            <set field="quantityReduceRemaining" from="sourceQuantityTotal - quantity"/>
-                            <iterate list="shipmentItemSourceList" entry="shipmentItemSource">
-                                <set field="quantityReduce" from="quantityReduceRemaining &gt; shipmentItemSource.quantityNotHandled ?
-                                        shipmentItemSource.quantityNotHandled : quantityReduceRemaining"/>
-                                <if condition="quantityReduce == 0"><break/></if>
-                                <service-call name="update#mantle.shipment.ShipmentItemSource"
-                                        in-map="[shipmentItemSourceId:shipmentItemSource.shipmentItemSourceId,
-                                            quantity:(shipmentItemSource.quantity - quantityReduce),
-                                            quantityNotHandled:(shipmentItemSource.quantityNotHandled - quantityReduce)]"/>
-                                <set field="quantityReduceRemaining" from="quantityReduceRemaining - quantityReduce"/>
-
-                                <!-- also update ShipmentItem.quantity -->
-                                <entity-find-one entity-name="mantle.shipment.ShipmentItem" value-field="shipmentItem">
-                                    <field-map field-name="shipmentId" from="shipmentItemSource.shipmentId"/>
-                                    <field-map field-name="productId" from="orderItem.productId"/></entity-find-one>
-                                <set field="newItemQuantity" from="shipmentItem.quantity &gt; quantityReduce ?
-                                        shipmentItem.quantity - quantityReduce : 0"/>
-                                <service-call name="update#mantle.shipment.ShipmentItem"
-                                        in-map="[shipmentId:shipmentItem.shipmentId, productId:shipmentItem.productId,
-                                            quantity:newItemQuantity]"/>
-                            </iterate>
-                        </else>
-                    </if>
+                            <!-- also update ShipmentItem.quantity -->
+                            <entity-find-one entity-name="mantle.shipment.ShipmentItem" value-field="shipmentItem">
+                                <field-map field-name="shipmentId" from="shipmentItemSource.shipmentId"/>
+                                <field-map field-name="productId" from="orderItem.productId"/></entity-find-one>
+                            <set field="newItemQuantity" from="shipmentItem.quantity &gt; quantityReduce ?
+                                    shipmentItem.quantity - quantityReduce : 0"/>
+                            <service-call name="update#mantle.shipment.ShipmentItem"
+                                    in-map="[shipmentId:shipmentItem.shipmentId, productId:shipmentItem.productId,
+                                        quantity:newItemQuantity]"/>
+                        </iterate>
+                    </else></if>
                 </if>
             </if>
 
@@ -758,17 +775,17 @@ h2. General Order Placement and eCommerce Usage
             </entity-find>
 
             <!-- calculate the price based on quantity, etc, -->
-            <if condition="!unitAmount">
+            <if condition="unitAmount == null"><then>
                 <service-call name="mantle.product.PriceServices.get#ProductPrice" out-map="priceMap"
-                        in-map="[productId:productId, quantity:quantity, priceUomId:currencyUomId,
+                              in-map="[productId:productId, quantity:quantity, priceUomId:currencyUomId,
                          productStoreId:productStoreId, customerPartyId:customerPartyId, vendorPartyId:vendorPartyId]"/>
 
                 <set field="unitAmount" from="priceMap.price"/>
                 <set field="unitListPrice" from="priceMap.listPrice"/>
                 <set field="isModifiedPrice" value="N"/>
-
-                <else><set field="isModifiedPrice" value="Y"/></else>
-            </if>
+            </then><else>
+                <set field="isModifiedPrice" value="Y"/>
+            </else></if>
 
             <if condition="orderItemList"><then>
                 <set field="orderItem" from="orderItemList.first"/>

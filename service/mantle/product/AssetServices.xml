@@ -108,9 +108,21 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"/>
             <set field="productStore" from="orderHeader.'mantle.product.store.ProductStore'"/>
-            <!-- if store setup for no reservation return now -->
-            <if condition="productStore?.reservationOrderEnumId == 'AsResOrdNoRes'"><return/></if>
-            
+            <if condition="productStore == null"><then>
+                <set field="orderParts" from="orderHeader.parts"/>
+                <iterate list="orderParts" entry="orderPart">
+                    <!-- if vendorPartyId is not an internal org this is not a sales order, so don't do inventory res (return) -->
+                    <entity-find-one entity-name="mantle.party.PartyRole" value-field="orgPartyRole" cache="true">
+                        <field-map field-name="partyId" from="orderPart.vendorPartyId"/>
+                        <field-map field-name="roleTypeId" value="OrgInternal"/>
+                    </entity-find-one>
+                    <if condition="orgPartyRole == null"><return/></if>
+                </iterate>
+            </then><else>
+                <!-- if store setup for no reservation return now -->
+                <if condition="productStore.reservationOrderEnumId == 'AsResOrdNoRes'"><return/></if>
+            </else></if>
+
             <entity-find entity-name="mantle.order.OrderItem" list="orderItemList">
                 <econdition field-name="orderId"/>
                 <order-by field-name="orderItemSeqId"/>
@@ -119,6 +131,22 @@ along with this software (see the LICENSE.md file). If not, see
                 <service-call name="mantle.product.AssetServices.reserve#AssetForOrderItem"
                         in-map="[orderId:orderId, orderItemSeqId:orderItem.orderItemSeqId, productStore:productStore]"/>
             </iterate>
+        </actions>
+    </service>
+    <service verb="checkReserve" noun="AssetForOrderItem">
+        <in-parameters>
+            <parameter name="orderId" required="true"/>
+            <parameter name="orderItemSeqId" required="true"/>
+        </in-parameters>
+        <actions>
+            <entity-find-one entity-name="mantle.order.OrderItem" value-field="orderItem"/>
+            <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"/>
+            <entity-find-related-one value-field="orderItem" relationship-name="mantle.order.OrderPart" to-value-field="orderPart"/>
+            <!-- only do this automatically if order placed or later but not completed/cancelled/etc -->
+            <set field="resStatusList" from="['OrderPlaced', 'OrderProcessing', 'OrderApproved', 'OrderSent', 'OrderHold']"/>
+            <if condition="!(orderHeader.statusId in resStatusList) || !(orderPart.statusId in resStatusList)"><return/></if>
+            <!-- reserve assets, or update reservations as needed -->
+            <service-call name="mantle.product.AssetServices.reserve#AssetForOrderItem" in-map="context"/>
         </actions>
     </service>
     <service verb="reserve" noun="AssetForOrderItem" no-tx-cache="true">
@@ -148,9 +176,10 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"/>
             <entity-find-related-one value-field="orderItem" relationship-name="mantle.order.OrderPart" to-value-field="orderPart"/>
 
-            <!-- check OrderHeader and OrderPart status, return immediately if not OrderPlaced, OrderProcessing, OrderApproved, OrderSent, or OrderHold -->
-            <set field="resStatusList" from="['OrderPlaced', 'OrderProcessing', 'OrderApproved', 'OrderSent', 'OrderHold']"/>
-            <if condition="!(orderHeader.statusId in resStatusList) || !(orderPart.statusId in resStatusList)"><return/></if>
+            <!-- check OrderHeader and OrderPart status, return immediately if not Input, Placed, Processing, Approved, Sent, or Hold -->
+            <set field="resStatusList" from="['OrderOpen', 'OrderRequested', 'OrderProposed', 'OrderPlaced', 'OrderProcessing', 'OrderApproved', 'OrderSent', 'OrderHold']"/>
+            <if condition="!(orderHeader.statusId in resStatusList) || !(orderPart.statusId in resStatusList)">
+                <return message="Not reserving, order or part not in status that allows reservation"/></if>
 
             <!-- before finding remaining quantity and getting existing reservations, resetReservations if specified -->
             <if condition="resetReservations">
@@ -208,8 +237,9 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="mantle.facility.Facility" value-field="inventoryFacility">
                 <field-map field-name="facilityId" from="inventoryFacilityId"/></entity-find-one>
             <set field="assetAllowOtherOwner" from="inventoryFacility?.assetAllowOtherOwner"/>
-            <set field="organizationPartyId" from="productStore?.organizationPartyId ?: orderPart?.vendorPartyId"/>
 
+            <!-- determine organizationPartyId -->
+            <set field="organizationPartyId" from="productStore?.organizationPartyId ?: orderPart?.vendorPartyId"/>
             <!-- if organizationPartyId is not an internal org this is not a sales order, so don't do inventory res (return) -->
             <entity-find-one entity-name="mantle.party.PartyRole" value-field="orgPartyRole" cache="true">
                 <field-map field-name="partyId" from="organizationPartyId"/>
@@ -247,14 +277,96 @@ along with this software (see the LICENSE.md file). If not, see
                 </iterate>
             </if>
             <if condition="checkQuantityRemaining &gt; 0">
+                <set field="baseAssetCond" from="[productId:productId, statusId:'AstAvailable']"/>
+                <if condition="inventoryFacilityId"><set field="baseAssetCond.facilityId" from="inventoryFacilityId"/></if>
+                <if condition="organizationPartyId &amp;&amp; assetAllowOtherOwner != 'Y'">
+                    <set field="baseAssetCond.ownerPartyId" from="organizationPartyId"/></if>
+
+                <!-- see if we need to try for single lot and newer inventory, done via lotsToUse list -->
+                <set field="lotsToUse" from="null"/>
+                <set field="singleLot" from="false"/>
+                <set field="newerInventory" from="false"/>
+                <if condition="orderPart.customerPartyId">
+                    <entity-find entity-name="mantle.party.PartySetting" list="custSettingList" cache="true">
+                        <econdition field-name="partyId" from="orderPart.customerPartyId"/>
+                        <econdition field-name="partySettingTypeId" value="CustomerSetting"/>
+                    </entity-find>
+                    <set field="singleLot" from="custSettingList.find({ 'CsstSingleLot'.equals(it.settingValue) }) != null"/>
+                    <set field="newerInventory" from="custSettingList.find({ 'CsstNewerInventory'.equals(it.settingValue) }) != null"/>
+                </if>
+
+                <if condition="singleLot || newerInventory">
+                    <set field="newerThanExpireDate" from="null"/>
+                    <if condition="newerInventory">
+                        <!-- get most recent asset issued and lot expire date for it -->
+                        <entity-find entity-name="mantle.product.issuance.AssetIssuanceLotSummary" list="issuanceLotList" limit="1">
+                            <econdition field-name="toPartyId" from="orderPart.customerPartyId"/>
+                            <econdition field-name="productId"/>
+                            <select-field field-name="expirationDate,expectedEndOfLife"/>
+                            <order-by field-name="-issuedDate"/>
+                        </entity-find>
+                        <if condition="issuanceLotList">
+                            <set field="newerThanExpireDate" from="issuanceLotList[0].expirationDate ?: issuanceLotList[0].expectedEndOfLife"/></if>
+                    </if>
+                    <!-- do pre-query to find sufficient lots, or if no sufficient largest lots by order to minimize lots -->
+                    <entity-find entity-name="mantle.product.asset.AssetLotSummary" list="lotSummaryList">
+                        <econdition-object field="baseAssetCond"/>
+                        <econdition field-name="expirationDate" operator="greater-equals" from="newerThanExpireDate" ignore-if-empty="true"/>
+                        <select-field field-name="lotId,availableToPromiseTotal,manufacturedDate,expirationDate"/>
+                        <!-- order to get fewest but sufficient available in a lot -->
+                        <order-by field-name="availableToPromiseTotal"/>
+                    </entity-find>
+                    <set field="availableFoundByLot" from="0.0"/>
+                    <iterate list="lotSummaryList" entry="lotSummary">
+                        <set field="availableFoundByLot" from="availableFoundByLot + lotSummary.availableToPromiseTotal"/></iterate>
+                    <!-- if no or insufficient records found and newerThanExpireDate, search again without -->
+                    <if condition="availableFoundByLot &lt; checkQuantityRemaining &amp;&amp; newerThanExpireDate != null">
+                        <!-- in this case we could get most recent inventory (-expirationDate) since we failed the newer than
+                            constraint, but that would prioritize age over single lot so only do if !singleLot -->
+                        <!-- when finding minimal lot or newest results are used in reverse order, so use expirationDate and not -expirationDate -->
+                        <set field="lotRetryOrderBy" from="singleLot ? 'availableToPromiseTotal' : 'expirationDate'"/>
+                        <entity-find entity-name="mantle.product.asset.AssetLotSummary" list="lotSummaryList">
+                            <econdition-object field="baseAssetCond"/>
+                            <select-field field-name="lotId,availableToPromiseTotal,manufacturedDate,expirationDate"/>
+                            <order-by field-name="${lotRetryOrderBy}"/>
+                        </entity-find>
+                    </if>
+                    <!-- if we found any lots look for singleLotId if singleLot, else use best candidate lots based on queries above -->
+                    <if condition="lotSummaryList">
+                        <set field="singleLotId" from="null"/>
+                        <if condition="singleLot">
+                            <!-- find first in list (smallest) lot with sufficient inventory and use it -->
+                            <iterate list="lotSummaryList" entry="lotSummary">
+                                <if condition="lotSummary.availableToPromiseTotal &gt;= checkQuantityRemaining">
+                                    <set field="singleLotId" from="lotSummary.lotId"/><break/></if>
+                            </iterate>
+                        </if>
+                        <if condition="singleLotId"><then>
+                            <log level="warn" message="Found single lot ${singleLotId}"/>
+                            <set field="lotsToUse" from="[singleLotId]"/>
+                        </then><else><script><![CDATA[
+                            // no single lot found? go end to beginning and use as many lots as needed
+                            lotsToUse = []
+                            BigDecimal lotQuantityRemaining = checkQuantityRemaining
+                            for (int i = lotSummaryList.size() - 1; i >= 0; i--) {
+                                def curLotSummary = lotSummaryList.get(i)
+                                lotQuantityRemaining -= curLotSummary.availableToPromiseTotal
+                                lotsToUse.add(curLotSummary.lotId)
+                                if (lotQuantityRemaining <= 0.0) break
+                            }
+                        ]]></script></else></if>
+                        <log level="warn" message="Lots to use: ${lotsToUse}"/>
+                    </if>
+                </if>
+
+                <!-- ========== main available query ========== -->
                 <!-- don't lock here, we'll lock records we need individually to avoid contention -->
                 <entity-find entity-name="mantle.product.asset.Asset" list="checkAssetList">
-                    <econdition field-name="productId"/><econdition field-name="statusId" value="AstAvailable"/>
-                    <econdition field-name="facilityId" from="inventoryFacilityId" ignore-if-empty="true"/>
-                    <econdition field-name="ownerPartyId" from="organizationPartyId" ignore="!organizationPartyId || assetAllowOtherOwner == 'Y'"/>
+                    <econdition-object field="baseAssetCond"/>
                     <!-- only look for Assets with available quantity, to reduce lock contention we'll create new records for negative ATP -->
                     <econdition field-name="availableToPromiseTotal" operator="greater" from="0"/>
                     <econdition field-name="assetId" operator="not-in" from="explicitAssetIdList" ignore-if-empty="true"/>
+                    <econdition field-name="lotId" operator="in" from="lotsToUse" ignore-if-empty="true"/>
                     <order-by field-name="${assetOrderBy},assetId"/>
                 </entity-find>
                 <iterate list="checkAssetList" entry="checkAsset">
@@ -882,6 +994,8 @@ along with this software (see the LICENSE.md file). If not, see
         <description>Receive an Asset</description>
         <in-parameters>
             <parameter name="assetId"><description>If specified receives to that Asset (uncommon) otherwise creates a new one.</description></parameter>
+            <auto-parameters entity-name="mantle.product.asset.Asset" include="nonpk"/>
+
             <parameter name="productId" required="true" default="defaultProductId"/>
             <parameter name="defaultProductId"><description>Field for special forms, if passed can be used as a default for the productId parameter.</description></parameter>
             <parameter name="quantity" type="BigDecimal" default="1"/>
@@ -891,7 +1005,6 @@ along with this software (see the LICENSE.md file). If not, see
                 otherwise defaults to AstInStorage.</description></parameter>
             <parameter name="receivedDate"><description>If statusId == AstIncoming then defaults to null, otherwise defaults to now.</description></parameter>
 
-            <auto-parameters entity-name="mantle.product.asset.Asset" include="nonpk"/>
             <parameter name="assetName"><description>Defaults to OrderItem.itemDescription if available.</description></parameter>
             <parameter name="facilityId" required="true"/>
             <parameter name="ownerPartyId"><description>If not passed in and orderId and orderItemSeqId are then uses
@@ -907,14 +1020,21 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="noProduceProduct" default-value="add"><description>If the asset has a productId that is
                 not one of the WorkEffort produce products, "add" it, "ignore" it, or return an "error"?</description></parameter>
 
+            <!-- Container fields -->
             <parameter name="containerId"><description>Put the new Asset in this Container, set its Facility and Location if not set.</description></parameter>
             <parameter name="containerTypeEnumId"><description>If specified and there is no containerId create a
                 Container of this type (with Facility and Location) and put Asset in it (set Asset.containerId).</description></parameter>
             <parameter name="containerSerialNumber"><description>Lookup Container with this ID as an alternative to the
                 containerId (if not specified), if none found create a Container with this serialNumber.</description></parameter>
-
+            <!-- AssetReceipt fields -->
             <parameter name="quantityRejected" type="BigDecimal"/>
             <parameter name="rejectionReasonEnumId"/>
+            <!-- Lot fields (note that both Asset and Lot have manufacturedDate; Asset.expectedEndOfLife is equivalent to Lot.expirationDate) -->
+            <parameter name="lotNumber"><description>If specified and no there is no lotId create a Lot with this number and the
+                expirationDate and mfgPartyId parameters.</description></parameter>
+            <parameter name="expirationDate" type="Date"><description>Used when creating a lot, defaults to expectedEndOfLife.
+                If this is specified and no expectedEndOfLife is then set expectedEndOfLife to this (regardless of whether Lot is created).</description></parameter>
+            <parameter name="mfgPartyId"/>
         </in-parameters>
         <out-parameters>
             <parameter name="assetId"/>
@@ -922,11 +1042,12 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="assetDetailId"/>
         </out-parameters>
         <actions>
-            <entity-find-one entity-name="mantle.product.Product" value-field="product"/>
-            <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"/>
-            <entity-find-one entity-name="mantle.order.OrderItem" value-field="orderItem"/>
-            <entity-find-one entity-name="mantle.work.effort.WorkEffort" value-field="workEffort"/>
-            <entity-find-one entity-name="mantle.facility.Facility" value-field="facility"/>
+            <entity-find-one entity-name="mantle.product.Product" value-field="product"><field-map field-name="productId"/></entity-find-one>
+            <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"><field-map field-name="orderId"/></entity-find-one>
+            <entity-find-one entity-name="mantle.order.OrderItem" value-field="orderItem">
+                <field-map field-name="orderId"/><field-map field-name="orderItemSeqId"/></entity-find-one>
+            <entity-find-one entity-name="mantle.work.effort.WorkEffort" value-field="workEffort"><field-map field-name="workEffortId"/></entity-find-one>
+            <entity-find-one entity-name="mantle.facility.Facility" value-field="facility"><field-map field-name="facilityId"/></entity-find-one>
 
             <!-- set type and class from product if not passed in -->
             <set field="assetTypeEnumId" from="assetTypeEnumId ?: (product.assetTypeEnumId ?: 'AstTpInventory')"/>
@@ -948,6 +1069,30 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="hasQuantity" from="!serialNumber &amp;&amp; quantity > 1 ? 'Y' : 'N'"/>
             <set field="assetName" from="assetName ?: orderItem?.itemDescription"/>
 
+            <if condition="expectedEndOfLife == null"><set field="expectedEndOfLife" from="expirationDate"/></if>
+
+            <!-- create a Lot if needed -->
+            <if condition="lotId"><then>
+                <entity-find-one entity-name="mantle.product.asset.Lot" value-field="lot"><field-map field-name="lotId"/></entity-find-one>
+                <if condition="manufacturedDate == null"><set field="manufacturedDate" from="lot.manufacturedDate"/></if>
+                <if condition="expectedEndOfLife == null"><set field="expectedEndOfLife" from="lot.expirationDate"/></if>
+            </then><else-if condition="lotNumber">
+                <entity-find entity-name="mantle.product.asset.Lot" list="existingLots">
+                    <econdition field-name="lotNumber"/><econdition field-name="mfgPartyId"/></entity-find>
+                <if condition="existingLots"><then>
+                    <set field="lotId" from="existingLots[0].lotId"/>
+                    <if condition="expectedEndOfLife == null"><set field="expectedEndOfLife" from="existingLots[0].expirationDate"/></if>
+                </then><else>
+                    <if condition="!mfgPartyId &amp;&amp; shipmentId">
+                        <entity-find-one entity-name="mantle.shipment.Shipment" value-field="shipment"/>
+                        <set field="mfgPartyId" from="shipment.fromPartyId"/>
+                    </if>
+                    <if condition="expirationDate == null"><set field="expirationDate" from="expectedEndOfLife"/></if>
+                    <service-call name="create#mantle.product.asset.Lot" out-map="context"
+                            in-map="[lotNumber:lotNumber, mfgPartyId:mfgPartyId, manufacturedDate:manufacturedDate, expirationDate:expirationDate]"/>
+                </else></if>
+            </else-if></if>
+
             <!-- create a Container if needed -->
             <if condition="!containerId &amp;&amp; (containerTypeEnumId || containerSerialNumber)">
                 <!-- will put containerId for the new record in the context -->
@@ -961,14 +1106,13 @@ along with this software (see the LICENSE.md file). If not, see
 
             <!-- create or update the Asset record -->
             <if condition="!assetId"><then>
-                <!-- TODO: if this has a workEffortId and not an orderId get acquireCost from WorkEffort somehow? -->
+                <!-- TODO: if this has a workEffortId and not an orderId get acquireCost from WorkEffort based on cost? -->
                 <service-call name="create#mantle.product.asset.Asset" out-map="context"
                         in-map="context + [quantityOnHandTotal:0, availableToPromiseTotal:0,
                             acquiredDate:(orderHeader?.placedDate ?: ec.user.nowTimestamp),
                             acquireOrderId:orderId, acquireOrderItemSeqId:orderItemSeqId,
                             acquireShipmentId:shipmentId, acquireCost:orderItem?.unitAmount,
-                            acquireCostUomId:orderHeader?.currencyUomId, acquireWorkEffortId:workEffortId,
-                            containerId:containerId]"/>
+                            acquireCostUomId:orderHeader?.currencyUomId, acquireWorkEffortId:workEffortId]"/>
             </then><else>
                 <entity-find-one entity-name="mantle.product.asset.Asset" value-field="asset"/>
                 <set field="asset.originalQuantity" from="(asset.originalQuantity ?: 0) + originalQuantity"/>
@@ -1055,6 +1199,12 @@ along with this software (see the LICENSE.md file). If not, see
                 <exclude field-name="quantityOnHandTotal"/>
             </auto-parameters>
             <parameter name="receivedDate"><description>If statusId == AstIncoming then no default, otherwise defaults to now.</description></parameter>
+            <!-- Lot fields (note that both Asset and Lot have manufacturedDate; Asset.expectedEndOfLife is equivalent to Lot.expirationDate) -->
+            <parameter name="lotNumber"><description>If specified and no there is no lotId create a Lot with this number and the
+                expirationDate and mfgPartyId parameters.</description></parameter>
+            <parameter name="expirationDate" type="Date"><description>Used when creating a lot, defaults to expectedEndOfLife.
+                If this is specified and no expectedEndOfLife is then set expectedEndOfLife to this (regardless of whether Lot is created).</description></parameter>
+            <parameter name="mfgPartyId"/>
         </in-parameters>
         <out-parameters><parameter name="assetDetailId"/></out-parameters>
         <actions>
@@ -1064,18 +1214,16 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="oldQoh" from="asset.quantityOnHandTotal"/>
 
             <!-- update the AssetReceipt -->
-            <if condition="!assetReceiptId">
+            <if condition="!assetReceiptId"><then>
                 <entity-find entity-name="mantle.product.receipt.AssetReceipt" list="assetReceiptList">
                     <econdition field-name="assetId"/><econdition field-name="shipmentId"/>
                     <order-by field-name="assetReceiptId"/>
                 </entity-find>
                 <set field="originalAssetReceipt" from="assetReceiptList?.first"/>
                 <set field="assetReceiptId" from="originalAssetReceipt?.assetReceiptId"/>
-
-                <else>
-                    <entity-find-one entity-name="mantle.product.receipt.AssetReceipt" value-field="originalAssetReceipt"/>
-                </else>
-            </if>
+            </then><else>
+                <entity-find-one entity-name="mantle.product.receipt.AssetReceipt" value-field="originalAssetReceipt"/>
+            </else></if>
             <if condition="!assetReceiptId"><return error="true" message="Cannot update Asset and Receipt, could not find AssetReceipt record for assetId [${assetId}], shipmentId [${shipmentId}]"/></if>
 
             <!-- calculate the quantityAccepted difference, will be set in quantityOnHandDiff and availableToPromiseDiff -->
@@ -1091,11 +1239,38 @@ along with this software (see the LICENSE.md file). If not, see
                         in-map="[shipmentId:shipmentId, productId:productId, newQuantityRemaining:newQuantityRemaining]"/>
             </if>
 
+            <if condition="expectedEndOfLife == null"><set field="expectedEndOfLife" from="expirationDate"/></if>
+
+            <!-- create a Lot if needed -->
+            <if condition="lotId"><then>
+                <entity-find-one entity-name="mantle.product.asset.Lot" value-field="lot"><field-map field-name="lotId"/></entity-find-one>
+                <if condition="manufacturedDate == null"><set field="manufacturedDate" from="lot.manufacturedDate"/></if>
+                <if condition="expectedEndOfLife == null"><set field="expectedEndOfLife" from="lot.expirationDate"/></if>
+            </then><else-if condition="lotNumber">
+                <entity-find entity-name="mantle.product.asset.Lot" list="existingLots">
+                    <econdition field-name="lotNumber"/><econdition field-name="mfgPartyId"/></entity-find>
+                <if condition="existingLots"><then>
+                    <set field="lotId" from="existingLots[0].lotId"/>
+                    <if condition="expectedEndOfLife == null"><set field="expectedEndOfLife" from="existingLots[0].expirationDate"/></if>
+                </then><else>
+                    <if condition="!mfgPartyId &amp;&amp; shipmentId">
+                        <entity-find-one entity-name="mantle.shipment.Shipment" value-field="shipment"/>
+                        <set field="mfgPartyId" from="shipment.fromPartyId"/>
+                    </if>
+                    <if condition="expirationDate == null"><set field="expirationDate" from="expectedEndOfLife"/></if>
+                    <service-call name="create#mantle.product.asset.Lot" out-map="context"
+                            in-map="[lotNumber:lotNumber, mfgPartyId:mfgPartyId, manufacturedDate:manufacturedDate, expirationDate:expirationDate]"/>
+                </else></if>
+            </else-if></if>
+
+            <!-- update AssetReceipt -->
             <!-- TODO: if quantityAccepted is updated and GL entry exists adjust the GL! -->
             <service-call name="update#mantle.product.receipt.AssetReceipt" in-map="context" out-map="context"/>
 
             <if condition="!receivedDate &amp;&amp; statusId &amp;&amp; statusId != 'AstIncoming'">
                 <set field="receivedDate" from="ec.user.nowTimestamp"/></if>
+
+            <!-- update the Asset record -->
             <!-- TODO: if acquireCost is updated adjust the GL, if set from null do GL posting! -->
             <service-call name="update#mantle.product.asset.Asset" in-map="context" out-map="context"/>
 
@@ -1110,9 +1285,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <service-call name="mantle.product.AssetServices.reserve#IncreasedAsset" in-map="[assetId:assetId]"/>
             </if>
 
-            <if condition="quantityDiff != 0">
-                <service-call name="mantle.product.AssetServices.change#AssetQuantity" in-map="context"/>
-            </if>
+            <if condition="quantityDiff != 0"><service-call name="mantle.product.AssetServices.change#AssetQuantity" in-map="context"/></if>
         </actions>
     </service>
     <service verb="replace" noun="AssetPartyAssignment">
@@ -1123,21 +1296,93 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <actions>
             <entity-find entity-name="mantle.product.asset.AssetPartyAssignment" list="apaList">
-                <date-filter/><econdition field-name="assetId"/><econdition field-name="roleTypeId"/>
-            </entity-find>
+                <date-filter/><econdition field-name="assetId"/><econdition field-name="roleTypeId"/></entity-find>
             <set field="foundExisting" from="false"/>
             <iterate list="apaList" entry="apaValue">
-                <if condition="apaValue.partyId != newPartyId">
+                <if condition="apaValue.partyId != newPartyId"><then>
                     <set field="apaValue.thruDate" from="ec.user.nowTimestamp"/>
                     <entity-update value-field="apaValue"/>
-
-                    <else><set field="foundExisting" from="true"/></else>
-                </if>
+                </then><else>
+                    <set field="foundExisting" from="true"/>
+                </else></if>
             </iterate>
             <if condition="!foundExisting">
                 <service-call name="create#mantle.product.asset.AssetPartyAssignment" in-map="[assetId:assetId,
                     partyId:newPartyId, roleTypeId:roleTypeId, fromDate:ec.user.nowTimestamp]"/>
             </if>
+        </actions>
+    </service>
+    <service verb="move" noun="Asset">
+        <in-parameters>
+            <parameter name="assetId" required="true"/>
+            <parameter name="facilityId"><description>Defaults to current facilityId</description></parameter>
+            <parameter name="locationSeqId"/>
+            <parameter name="quantity" type="BigDecimal"><description>Defaults to quantityOnHandTotal if hasQuantity, generally move entire Asset</description></parameter>
+        </in-parameters>
+        <actions>
+            <entity-find-one entity-name="mantle.product.asset.Asset" value-field="asset" for-update="true"/>
+            <if condition="asset == null"><message error="true">No asset found for ID ${assetId}</message></if>
+            <set field="facLoc" from="asset.location"/>
+            <if condition="!facilityId"><set field="facilityId" from="asset.facilityId"/></if>
+
+            <if condition="locationSeqId">
+                <entity-find-one entity-name="mantle.facility.FacilityLocation" value-field="checkFacLoc">
+                    <field-map field-name="facilityId"/><field-map field-name="locationSeqId"/></entity-find-one>
+                <if condition="checkFacLoc == null"><return error="true" message="Location [${locationSeqId}] is not valid in facility ${ec.resource.expand('FacilityNameTemplate', '', asset.facility)}"/></if>
+            </if>
+            <if condition="asset.hasQuantity == 'Y'">
+                <if condition="!quantity"><set field="quantity" from="asset.quantityOnHandTotal"/></if>
+                <if condition="quantity &gt; asset.quantityOnHandTotal">
+                    <return error="true" message="Move quantity ${quantity?.toPlainString()} is greater than on hand quantity ${asset.quantityOnHandTotal?.toPlainString()}"/></if>
+                <if condition="quantity &gt; asset.availableToPromiseTotal">
+                    <if condition="facilityId != asset.facilityId"><then>
+                        <return error="true" message="Tried to move to different facility but move quantity ${quantity?.toPlainString()} is greater than available quantity ${asset.availableToPromiseTotal?.toPlainString()}"/>
+                    </then><else>
+                        <message>Warning: move quantity ${quantity?.toPlainString()} is greater than available quantity ${asset.availableToPromiseTotal?.toPlainString()}</message>
+                    </else></if>
+                </if>
+            </if>
+
+            <if condition="quantity &amp;&amp; quantity &lt; asset.quantityOnHandTotal"><then>
+                <!-- clone asset in new facility/location with quantity -->
+                <service-call name="create#mantle.product.asset.Asset" out-map="newAssetOut"
+                        in-map="asset.getMap() + [assetId:null, facilityId:facilityId, locationSeqId:locationSeqId,
+                                quantityOnHandTotal:0, availableToPromiseTotal:0]"/>
+                <set field="newAssetId" from="newAssetOut.assetId"/>
+                <service-call name="create#mantle.product.asset.AssetDetail" out-map="context"
+                        in-map="[assetId:newAssetId, effectiveDate:ec.user.nowTimestamp, quantityOnHandDiff:quantity,
+                                 availableToPromiseDiff:quantity, productId:productId, otherAssetId:assetId]"/>
+
+                <!-- move reservations as needed -->
+                <if condition="quantity &gt; asset.availableToPromiseTotal">
+                    <set field="availableRemaining" from="quantity - asset.availableToPromiseTotal"/>
+                    <entity-find entity-name="mantle.product.issuance.AssetReservation" list="resList">
+                        <econdition field-name="assetId"/><order-by field-name="reservedDate"/></entity-find>
+                    <iterate list="resList" entry="res">
+                        <if condition="availableRemaining == 0"><break/></if>
+                        <set field="quantityToMove" from="availableRemaining &lt; res.quantity ? availableRemaining : res.quantity"/>
+                        <if condition="quantityToMove == 0"><continue/></if>
+                        <!-- make sure quantityToMove is less than res.quantityNotIssued, don't move issued quantities! -->
+                        <if condition="quantityToMove &gt; res.quantityNotIssued"><set field="quantityToMove" from="res.quantityNotIssued"/></if>
+                        <if condition="quantityToMove &gt; 0">
+                            <service-call name="mantle.product.AssetServices.move#AssetReservation" out-map="moveArOut"
+                                    in-map="[assetId:newAssetId, assetReservationId:res.assetReservationId, quantity:quantityToMove]"/>
+                            <set field="availableRemaining" from="availableRemaining - moveArOut.quantityMoved"/>
+                        </if>
+                    </iterate>
+                </if>
+
+                <!-- reduce asset QOH/ATP by quantity -->
+                <service-call name="create#mantle.product.asset.AssetDetail" out-map="context"
+                        in-map="[assetId:assetId, effectiveDate:ec.user.nowTimestamp, quantityOnHandDiff:-quantity,
+                                 availableToPromiseDiff:-quantity, productId:productId, otherAssetId:newAssetId]"/>
+            </then><else>
+                <service-call name="update#mantle.product.asset.Asset" in-map="context"/>
+            </else></if>
+
+            <entity-find-one entity-name="mantle.product.asset.Asset" value-field="newAsset"/>
+            <set field="newFacLoc" from="newAsset.location"/>
+            <message>Moved asset ${ec.resource.expand('AssetNameTemplate', '', asset)} from ${ec.resource.expand('FacilityLocationNameTemplate', '', facLoc?:[:])} to ${ec.resource.expand('FacilityLocationNameTemplate', '', newFacLoc?:[:])}.</message>
         </actions>
     </service>
 
@@ -1147,11 +1392,13 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="record" noun="PhysicalInventoryQuantity" no-tx-cache="true">
         <in-parameters>
+            <auto-parameters entity-name="mantle.product.asset.Asset" include="nonpk"><exclude field-name="classEnumId"/>
+                <exclude field-name="quantityOnHandTotal"/><exclude field-name="availableToPromiseTotal"/>
+                <exclude field-name="hasQuantity"/><exclude field-name="receivedDate"/><exclude field-name="acquiredDate"/></auto-parameters>
             <parameter name="productId" required="true"/>
             <parameter name="facilityId" required="true"/>
             <parameter name="physicalInventoryId"/>
             <parameter name="physicalInventoryCountId"/>
-            <parameter name="locationSeqId"/>
             <parameter name="quantity" type="BigDecimal" required="true"/>
             <parameter name="partyId" default="ec.user.userAccount.partyId"/>
             <parameter name="physicalInventoryDate" type="Timestamp" default="ec.user.nowTimestamp"/>
@@ -1180,11 +1427,13 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
     <service verb="record" noun="PhysicalInventoryChange" no-tx-cache="true">
         <in-parameters>
+            <auto-parameters entity-name="mantle.product.asset.Asset" include="nonpk"><exclude field-name="classEnumId"/>
+                <exclude field-name="quantityOnHandTotal"/><exclude field-name="availableToPromiseTotal"/>
+                <exclude field-name="hasQuantity"/><exclude field-name="receivedDate"/><exclude field-name="acquiredDate"/></auto-parameters>
             <parameter name="productId" required="true"/>
             <parameter name="facilityId" required="true"/>
             <parameter name="physicalInventoryId"/>
             <parameter name="physicalInventoryCountId"/>
-            <parameter name="locationSeqId"/>
             <parameter name="quantityChange" type="BigDecimal" required="true"/>
             <parameter name="partyId" default="ec.user.userAccount.partyId"/>
             <parameter name="physicalInventoryDate" type="Timestamp" default="ec.user.nowTimestamp"/>
@@ -1194,9 +1443,6 @@ along with this software (see the LICENSE.md file). If not, see
                 <description>Optional, meant to be used when called by other physical inventory services.</description>
                 <parameter name="asset" type="EntityValue"/>
             </parameter>
-            <parameter name="ownerPartyId"/>
-            <parameter name="acquireCost"/>
-            <parameter name="acquireCostUomId"/>
         </in-parameters>
         <out-parameters>
             <parameter name="physicalInventoryId"/>
@@ -1235,9 +1481,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <set field="quantityRemaining" from="0"/>
                     <!-- no passed assetList and quantityChange > 0, create new Asset -->
                     <service-call name="mantle.product.AssetServices.create#ProductAssetAdHoc" out-map="context"
-                            in-map="[productId:productId, facilityId:facilityId, locationSeqId:locationSeqId,
-                                createdDate:physicalInventoryDate, ownerPartyId:ownerPartyId,
-                                acquireCost:acquireCost, acquireCostUomId:acquireCostUomId]"/>
+                            in-map="context + [createdDate:physicalInventoryDate]"/>
                     <service-call name="create#mantle.product.asset.AssetDetail" out-map="context"
                             in-map="[assetId:assetId, effectiveDate:physicalInventoryDate, quantityOnHandDiff:quantityChange,
                                 availableToPromiseDiff:quantityChange, productId:productId,
@@ -1296,13 +1540,12 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
     <service verb="create" noun="ProductAssetAdHoc">
         <in-parameters>
+            <auto-parameters entity-name="mantle.product.asset.Asset" include="nonpk"><exclude field-name="classEnumId"/>
+                <exclude field-name="quantityOnHandTotal"/><exclude field-name="availableToPromiseTotal"/>
+                <exclude field-name="hasQuantity"/><exclude field-name="receivedDate"/><exclude field-name="acquiredDate"/></auto-parameters>
             <parameter name="productId" required="true"/>
             <parameter name="facilityId" required="true"/>
-            <parameter name="locationSeqId"/>
             <parameter name="createdDate" type="Timestamp" default="ec.user.nowTimestamp"/>
-            <parameter name="ownerPartyId"/>
-            <parameter name="acquireCost"/>
-            <parameter name="acquireCostUomId"/>
         </in-parameters>
         <out-parameters><parameter name="assetId"/></out-parameters>
         <actions>
@@ -1322,12 +1565,8 @@ along with this software (see the LICENSE.md file). If not, see
                 </if>
             </if>
             <service-call name="create#mantle.product.asset.Asset" out-map="assetOut"
-                    in-map="[productId:productId, facilityId:facilityId, locationSeqId:locationSeqId,
-                        assetTypeEnumId:assetTypeEnumId, classEnumId:product.assetClassEnumId,
-                        quantityOnHandTotal:0, availableToPromiseTotal:0, hasQuantity:'Y',
-                        statusId:statusId, ownerPartyId:ownerPartyId,
-                        receivedDate:createdDate, acquiredDate:createdDate,
-                        acquireCost:acquireCost, acquireCostUomId:acquireCostUomId]"/>
+                    in-map="context + [classEnumId:product.assetClassEnumId, quantityOnHandTotal:0, availableToPromiseTotal:0,
+                        hasQuantity:'Y', receivedDate:createdDate, acquiredDate:createdDate]"/>
             <set field="assetId" from="assetOut.assetId"/>
         </actions>
     </service>
