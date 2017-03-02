@@ -79,6 +79,8 @@ class OrderToCashBasicFlow extends Specification {
         ec.entity.tempResetSequencedIdPrimary("mantle.order.OrderHeader")
         ec.entity.tempResetSequencedIdPrimary("mantle.order.OrderItemBilling")
         ec.destroy()
+
+        ec.factory.waitWorkerPoolEmpty(50) // up to 5 seconds
     }
 
     def setup() {
@@ -260,7 +262,8 @@ class OrderToCashBasicFlow extends Specification {
         // NOTE: this has sequenced IDs so is sensitive to run order!
         List<String> dataCheckErrors = ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
             <!-- OrderHeader status to Completed -->
-            <mantle.order.OrderHeader orderId="${cartOrderId}" statusId="OrderCompleted"/>
+            <mantle.order.OrderHeader orderId="${cartOrderId}" entryDate="${effectiveTime}" placedDate="${effectiveTime}"
+                statusId="OrderCompleted" currencyUomId="USD" productStoreId="POPC_DEFAULT" grandTotal="${kieEnabled ? '145.68' : '140.68'}"/>
         </entity-facade-xml>""").check()
         logger.info("validate Sales Order Complete data check results: " + dataCheckErrors)
 
