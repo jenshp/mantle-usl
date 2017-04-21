@@ -13,7 +13,7 @@ along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
 <entities xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/entity-definition-2.0.xsd">
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/entity-definition-2.1.xsd">
 
     <!-- ========================================================= -->
     <!-- mantle.product.asset -->
@@ -31,6 +31,65 @@ along with this software (see the LICENSE.md file). If not, see
         <alias entity-alias="ASD" name="assetId"/>
         <alias entity-alias="ASD" name="availableToPromiseTotal" field="availableToPromiseDiff" function="sum"/>
         <alias entity-alias="ASD" name="quantityOnHandTotal" field="quantityOnHandDiff" function="sum"/>
+    </view-entity>
+    <view-entity entity-name="AssetValuationSummary" package="mantle.product.asset">
+        <member-entity entity-alias="AST" entity-name="mantle.product.asset.Asset"/>
+        <member-entity entity-alias="ASD" entity-name="mantle.product.asset.AssetDetail" join-from-alias="AST">
+            <key-map field-name="assetId"/></member-entity>
+        <member-entity entity-alias="PRD" entity-name="mantle.product.Product" join-from-alias="AST">
+            <key-map field-name="productId"/></member-entity>
+        <member-entity entity-alias="ALOT" entity-name="mantle.product.asset.Lot" join-from-alias="AST" join-optional="true">
+            <key-map field-name="lotId"/></member-entity>
+        <alias-all entity-alias="AST"/>
+        <alias-all entity-alias="ASD"><exclude field="productId"/><exclude field="availableToPromiseDiff"/>
+            <exclude field="quantityOnHandDiff"/></alias-all>
+        <alias entity-alias="ASD" name="availableToPromiseDiff" function="sum"/>
+        <alias entity-alias="ASD" name="quantityOnHandDiff" function="sum"/>
+        <alias entity-alias="PRD" name="pseudoId"/>
+        <alias entity-alias="PRD" name="productName"/>
+        <alias entity-alias="ALOT" name="mfgPartyId"/>
+        <alias entity-alias="ALOT" name="lotNumber"/>
+        <alias name="totalCost" function="sum"><complex-alias operator="*">
+            <complex-alias-field entity-alias="ASD" field="quantityOnHandDiff"/>
+            <complex-alias-field entity-alias="AST" field="acquireCost"/>
+        </complex-alias></alias>
+        <alias name="minAcquireCost" entity-alias="AST" field="acquireCost" function="min"/>
+        <alias name="maxAcquireCost" entity-alias="AST" field="acquireCost" function="max"/>
+    </view-entity>
+    <view-entity entity-name="AssetOnHandSummary" package="mantle.product.asset">
+        <member-entity entity-alias="AST" entity-name="mantle.product.asset.Asset"/>
+        <member-entity entity-alias="ASD" entity-name="mantle.product.asset.AssetDetail" join-from-alias="AST">
+            <key-map field-name="assetId"/></member-entity>
+        <member-entity entity-alias="PRD" entity-name="mantle.product.Product" join-from-alias="AST">
+            <key-map field-name="productId"/></member-entity>
+        <alias-all entity-alias="AST"/>
+        <alias-all entity-alias="ASD"><exclude field="productId"/><exclude field="availableToPromiseDiff"/>
+            <exclude field="quantityOnHandDiff"/></alias-all>
+        <alias entity-alias="PRD" name="pseudoId"/>
+        <alias entity-alias="PRD" name="productName"/>
+        <alias name="startingOnHand" function="sum">
+            <case><when expression="ASD.EFFECTIVE_DATE &lt; '${ec.l10n.format(fromDate, 'yyyy-MM-dd HH:mm:ss')}'">
+                <complex-alias expression="ASD.QUANTITY_ON_HAND_DIFF"/></when><else><complex-alias expression="0"/></else></case>
+        </alias>
+        <alias name="onHandChange" function="sum">
+            <case><when expression="ASD.EFFECTIVE_DATE BETWEEN '${ec.l10n.format(fromDate, 'yyyy-MM-dd HH:mm:ss')}' AND '${ec.l10n.format(thruDate, 'yyyy-MM-dd HH:mm:ss')}'">
+                <complex-alias expression="ASD.QUANTITY_ON_HAND_DIFF"/></when><else><complex-alias expression="0"/></else></case>
+        </alias>
+    </view-entity>
+    <view-entity entity-name="AssetOnHandDetail" package="mantle.product.asset">
+        <member-entity entity-alias="ASD" entity-name="mantle.product.asset.AssetDetail"/>
+        <member-entity entity-alias="AST" entity-name="mantle.product.asset.Asset" join-from-alias="ASD">
+            <key-map field-name="assetId"/></member-entity>
+        <member-entity entity-alias="AISS" entity-name="mantle.product.issuance.AssetIssuance" join-from-alias="ASD" join-optional="true">
+            <key-map field-name="assetIssuanceId"/></member-entity>
+        <member-entity entity-alias="AREC" entity-name="mantle.product.receipt.AssetReceipt" join-from-alias="ASD" join-optional="true">
+            <key-map field-name="assetReceiptId"/></member-entity>
+        <alias-all entity-alias="AST"/>
+        <alias-all entity-alias="ASD"><exclude field="productId"/></alias-all>
+        <alias entity-alias="AISS" name="issOrderId" field="orderId"/>
+        <alias entity-alias="AISS" name="issInvoiceId" field="invoiceId"/>
+        <alias entity-alias="AREC" name="recOrderId" field="orderId"/>
+        <alias entity-alias="AREC" name="recInvoiceId" field="invoiceId"/>
     </view-entity>
 
     <view-entity entity-name="AssetAndProduct" package="mantle.product.asset">
@@ -51,6 +110,8 @@ along with this software (see the LICENSE.md file). If not, see
             <key-map field-name="productId"/></member-entity>
         <member-entity entity-alias="ORFAC" entity-name="mantle.facility.Facility" join-from-alias="AST" join-optional="true">
             <key-map field-name="originFacilityId" related="facilityId"/></member-entity>
+        <member-entity entity-alias="ALOT" entity-name="mantle.product.asset.Lot" join-from-alias="AST" join-optional="true">
+            <key-map field-name="lotId"/></member-entity>
         <alias-all entity-alias="AST"/>
         <alias entity-alias="FAC" name="facilityName"/>
         <alias entity-alias="PROD" name="pseudoId"/>
@@ -59,6 +120,9 @@ along with this software (see the LICENSE.md file). If not, see
         <alias entity-alias="PROD" name="productTypeEnumId"/>
         <alias entity-alias="ORFAC" name="originFacilityName" field="facilityName"/>
         <alias entity-alias="ORFAC" name="originOwnerPartyId" field="ownerPartyId"/>
+        <alias entity-alias="ALOT" name="mfgPartyId"/>
+        <alias entity-alias="ALOT" name="lotNumber"/>
+        <alias entity-alias="ALOT" name="expirationDate"/>
     </view-entity>
     <view-entity entity-name="AssetLocationDetail" package="mantle.product.asset">
         <member-entity entity-alias="AST" entity-name="mantle.product.asset.Asset"/>

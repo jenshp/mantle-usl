@@ -12,13 +12,13 @@ You should have received a copy of the CC0 Public Domain Dedication
 along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
-<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.0.xsd">
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.1.xsd">
 
     <service verb="create" noun="GlAccount" type="entity-auto">
         <in-parameters>
             <auto-parameters entity-name="mantle.ledger.account.GlAccount"/>
             <parameter name="glAccountId" default="accountCode"/>
-            <parameter name="accountCode" required="true"/>
+            <parameter name="accountCode" required="true"><matches regexp="\d*" message="Enter digits only, masking is added on display"/></parameter>
             <parameter name="accountName" required="true"/>
             <parameter name="glAccountClassEnumId" required="true"/>
             <parameter name="glResourceTypeEnumId" default-value="GlrtMoney"/>
@@ -769,6 +769,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="organizationPartyId" required="true"/>
             <parameter name="filterDate" type="Timestamp"/>
             <parameter name="timePeriodTypeId"/>
+            <parameter name="term"/>
         </in-parameters>
         <out-parameters><parameter name="timePeriodList" type="List"/></out-parameters>
         <actions>
@@ -781,6 +782,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <econdition field-name="periodPurposeEnumId" value="Fiscal" ignore="timePeriodTypeId"/>
                 <econdition field-name="partyId" from="organizationPartyId"/>
                 <econdition field-name="timePeriodTypeId" ignore-if-empty="true"/>
+                <econdition field-name="periodName" operator="like" value="%${term}%" ignore-case="true"/>
             </entity-find>
 
             <if condition="!timePeriodList">
@@ -794,7 +796,7 @@ along with this software (see the LICENSE.md file). If not, see
                 </entity-find>
                 <if condition="partyRelationshipList">
                     <service-call name="mantle.ledger.LedgerServices.get#OrganizationFiscalTimePeriods" out-map="parentPeriodsOut"
-                            in-map="[organizationPartyId:partyRelationshipList[0].toPartyId, filterDate:filterDate]"/>
+                            in-map="[organizationPartyId:partyRelationshipList[0].toPartyId, filterDate:filterDate, timePeriodTypeId:timePeriodTypeId, term:term]"/>
                     <set field="parentOrgPeriodList" from="parentPeriodsOut.timePeriodList"/>
 
                     <!-- if periods are from a parent org, create clone for this org -->
@@ -1161,7 +1163,7 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
 
     <service verb="recalculate" noun="GlAccountOrgSummaries" semaphore="wait" semaphore-parameter="organizationPartyId"
-             authenticate="anonymous-all" transaction-timeout="600">
+             authenticate="anonymous-all" transaction-timeout="1800">
         <!-- NOTE: this service is not protected for authz/authc so that it can run in background; don't expose to unprotected access -->
         <in-parameters>
             <parameter name="organizationPartyId"/>

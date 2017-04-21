@@ -15,7 +15,7 @@ along with this software (see the LICENSE.md file). If not, see
 
 <!-- General Guideline Verbs: GET=find, POST=create/do, PUT=store (create or update), PATCH=update, DELETE=delete  -->
 
-<resource xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/rest-api-2.0.xsd"
+<resource xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/rest-api-2.1.xsd"
         name="mantle" displayName="Mantle USL REST API" version="1.1.0"
         description="Mantle services and various convenient entity operations are available through this API.
             Not all possible entity operations are included in this API as they can be done through the automatic Entity
@@ -557,7 +557,7 @@ along with this software (see the LICENSE.md file). If not, see
             <method type="get"><entity name="orders" masterName="default" operation="one"/></method>
 
             <resource name="displayInfo"><method type="get">
-                <service name="mantle.order.OrderServices.get#OrderDisplayInfo"/></method></resource>
+                <service name="mantle.order.OrderInfoServices.get#OrderDisplayInfo"/></method></resource>
 
             <resource name="parts">
                 <method type="post"><service name="mantle.order.OrderServices.create#OrderPart"/></method>

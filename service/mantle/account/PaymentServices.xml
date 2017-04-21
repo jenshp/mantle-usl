@@ -12,7 +12,7 @@ You should have received a copy of the CC0 Public Domain Dedication
 along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
-<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.0.xsd">
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.1.xsd">
 
     <service verb="get" noun="PaymentDisplayInfo">
         <in-parameters><parameter name="paymentId" required="true"/></in-parameters>
@@ -528,11 +528,11 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
             <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice"/>
             <if condition="payment.amountUomId != invoice.currencyUomId">
-                <return error="true" message="Cannot apply payment [${paymentId}] to invoice [invoiceId], payment has a different currency [${payment.amountUomId}] than invoice [${invoice.currencyUomId}]"/></if>
+                <return error="true" message="Cannot apply payment [${paymentId}] to invoice [${invoiceId}], payment has a different currency [${payment.amountUomId}] than invoice [${invoice.currencyUomId}]"/></if>
             <if condition="payment.fromPartyId != invoice.toPartyId">
-                <return error="true" message="Cannot apply payment [${paymentId}] to invoice [invoiceId], payment is from a different party [${payment.fromPartyId}] than invoice is to [${invoice.toPartyId}]"/></if>
+                <return error="true" message="Cannot apply payment [${paymentId}] to invoice [${invoiceId}], payment is from a different party [${payment.fromPartyId}] than invoice is to [${invoice.toPartyId}]"/></if>
             <if condition="payment.toPartyId != invoice.fromPartyId">
-                <return error="true" message="Cannot apply payment [${paymentId}] to invoice [invoiceId], payment is to a different party [${payment.toPartyId}] than invoice is from [${invoice.fromPartyId}]"/></if>
+                <return error="true" message="Cannot apply payment [${paymentId}] to invoice [${invoiceId}], payment is to a different party [${payment.toPartyId}] than invoice is from [${invoice.fromPartyId}]"/></if>
 
             <service-call name="mantle.account.PaymentServices.check#InvoiceStatusForPayment" in-map="[invoiceId:invoiceId]"/>
 
@@ -542,16 +542,17 @@ along with this software (see the LICENSE.md file). If not, see
                         appliedDate:ec.user.nowTimestamp]"/>
 
             <!-- Payment Applied, now update Invoice status -->
-            <service-call name="mantle.account.InvoiceServices.get#InvoiceTotal" out-map="context"
-                    in-map="[invoiceId:invoiceId]"/>
+            <service-call name="mantle.account.InvoiceServices.get#InvoiceTotal" out-map="context" in-map="[invoiceId:invoiceId]"/>
             <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice"/>
-            <if condition="unpaidTotal == 0">
+            <if condition="unpaidTotal == 0"><then>
                 <if condition="invoice.statusId == 'InvoiceSent' || invoice.statusId == 'InvoiceFinalized'"><then>
                     <service-call name="update#mantle.account.invoice.Invoice" in-map="[invoiceId:invoiceId, statusId:'InvoicePmtRecvd']"/>
                 </then><else>
                     <service-call name="update#mantle.account.invoice.Invoice" in-map="[invoiceId:invoiceId, statusId:'InvoicePmtSent']"/>
                 </else></if>
-            </if>
+            </then><else>
+                <log message="After apply payment ${paymentId} to invoice ${invoiceId} not setting to Payment Sent/Received because unpaidTotal is ${unpaidTotal}"/>
+            </else></if>
         </actions>
     </service>
 
@@ -718,6 +719,7 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="authFailed" type="Boolean"/></out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"/>
+            <!-- don't auto-authorize if there is no store for the order -->
             <if condition="!orderHeader.productStoreId"><return/></if>
 
             <set field="authFailed" from="false"/>
@@ -725,6 +727,11 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find entity-name="mantle.account.payment.Payment" list="paymentList">
                 <econdition field-name="orderId"/></entity-find>
             <iterate list="paymentList" entry="payment">
+                <if condition="payment.statusId in ['PmntAuthorized', 'PmntDelivered', 'PmntConfirmed']">
+                    <set field="totalAuthorized" from="totalAuthorized + (payment.amount ?: 0.0)"/>
+                    <continue/>
+                </if>
+
                 <service-call name="mantle.account.PaymentServices.authorize#StorePayment" out-map="authOut"
                     in-map="[paymentId:payment.paymentId, payment:payment, productStoreId:orderHeader.productStoreId]"/>
 
@@ -758,7 +765,15 @@ along with this software (see the LICENSE.md file). If not, see
             <!-- if we authorized all set order to approved; don't use mantle.order.OrderServices.approve#Order service,
                 meant for manual approval and requires permission -->
             <if condition="totalAuthorized &gt;= orderHeader.grandTotal">
-                <service-call name="mantle.order.OrderServices.update#OrderStatus" in-map="[orderId:orderId, statusId:'OrderApproved']"/></if>
+                <!-- run approval checks, don't approve if any warnings -->
+                <service-call name="mantle.order.OrderInfoServices.check#OrderPreApprove" in-map="[orderId:orderId]" out-map="checkOut"/>
+                <if condition="!checkOut.approveWarnings"><then>
+                    <service-call name="mantle.order.OrderServices.update#OrderStatus" in-map="[orderId:orderId, statusId:'OrderApproved']"/>
+                </then><else>
+                    <iterate list="checkOut.approveWarnings" entry="approveWarning">
+                        <log level="info" message="Order ${orderId} approve warning: ${approveWarning}"/></iterate>
+                </else></if>
+            </if>
         </actions>
     </service>
     <service verb="authorize" noun="StorePayment">
@@ -814,7 +829,7 @@ along with this software (see the LICENSE.md file). If not, see
 
             <entity-find-one entity-name="mantle.account.method.PaymentGatewayConfig" value-field="paymentGatewayConfig" cache="true"/>
             <if condition="paymentGatewayConfig == null">
-                <return error="true" message="Not authorizing Payment [${paymentId}], could not find PaymentGatewayConfig"/></if>
+                <return error="true" message="Not authorizing Payment ${paymentId}, could not find PaymentGatewayConfig"/></if>
 
             <service-call name="${paymentGatewayConfig.authorizeServiceName}" out-map="authOut"
                     in-map="[paymentId:payment.paymentId, cardSecurityCode:cardSecurityCode,
@@ -901,10 +916,18 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="payment == null"><entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/></if>
             <if condition="amount == null"><set field="amount" from="payment.amount"/></if>
 
+            <if condition="payment.statusId == 'PmntPromised' &amp;&amp; payment.paymentGatewayConfigId">
+                <!-- do an auth first -->
+                <service-call name="mantle.account.PaymentServices.authorize#SinglePayment"
+                        in-map="[paymentId:paymentId, payment:payment]"/>
+                <!-- status should be updated, if not is checked below -->
+                <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
+            </if>
+
             <!-- if the Payment.statusId is already PmntDelivered don't try again -->
             <!-- NOTE: also handle other statuses, ie anything other than PmntAuthorized? might be too inflexible... -->
             <if condition="payment.statusId != 'PmntAuthorized'">
-                <log level="info" message="Not capturing Payment [${paymentId}], is in ${payment.statusId} and not the Authorized status."/>
+                <log level="info" message="Not capturing Payment ${paymentId}, is in ${payment.statusId} and not the Authorized status."/>
                 <return/>
             </if>
 
@@ -932,11 +955,11 @@ along with this software (see the LICENSE.md file). If not, see
 
             <entity-find-one entity-name="mantle.account.method.PaymentGatewayConfig" value-field="paymentGatewayConfig" cache="true"/>
             <if condition="paymentGatewayConfig == null">
-                <return error="true" message="Not authorizing Payment [${paymentId}], could not find PaymentGatewayConfig"/></if>
+                <return error="true" message="Not capturing Payment ${paymentId}, could not find PaymentGatewayConfig"/></if>
 
             <if condition="!paymentGatewayConfig.captureServiceName">
                 <!-- don't blow up on this, we allow no capture service if intentionally configured that way -->
-                <log level="info" message="Not capturing Payment [${paymentId}], no captureServiceName in PaymentGatewayConfig [${paymentGatewayConfigId}]"/>
+                <log level="info" message="Not capturing Payment ${paymentId}, no captureServiceName in PaymentGatewayConfig [${paymentGatewayConfigId}]"/>
                 <return/>
             </if>
 
@@ -971,8 +994,8 @@ along with this software (see the LICENSE.md file). If not, see
             <!-- NOTE: also handle other statuses, ie anything other than PmntAuthorized? might be too inflexible... -->
             <if condition="payment.statusId != 'PmntAuthorized'">
                 <if condition="payment.statusId == 'PmntDelivered'">
-                    <return error="true" message="Cannot release payment [${paymentId}], because it is not authorized only. The payment is delivered (captured), so try a refund instead."/>
-                    <else><return error="true" message="Cannot refund payment [${paymentId}], must be authorized only."/></else>
+                    <return error="true" message="Cannot release payment ${paymentId}, because it is not in the authorized status. The payment is delivered (captured), so try a refund instead."/>
+                    <else><return error="true" message="Cannot release payment ${paymentId}, must be in the authorized status."/></else>
                 </if>
             </if>
 
@@ -986,11 +1009,11 @@ along with this software (see the LICENSE.md file). If not, see
 
             <entity-find-one entity-name="mantle.account.method.PaymentGatewayConfig" value-field="paymentGatewayConfig" cache="true"/>
             <if condition="paymentGatewayConfig == null">
-                <return error="true" message="Not releasing (voiding) Payment [${paymentId}], could not find PaymentGatewayConfig"/></if>
+                <return error="true" message="Not releasing (voiding) Payment ${paymentId}, could not find PaymentGatewayConfig"/></if>
 
             <if condition="!paymentGatewayConfig.releaseServiceName">
                 <!-- don't blow up on this, we allow no refund service if intentionally configured that way -->
-                <log level="warn" message="Not releasing (voiding) Payment [${paymentId}], no releaseServiceName in PaymentGatewayConfig [${paymentGatewayConfigId}]"/>
+                <log level="warn" message="Not releasing (voiding) Payment ${paymentId}, no releaseServiceName in PaymentGatewayConfig [${paymentGatewayConfigId}]"/>
                 <return/>
             </if>
 
@@ -1039,11 +1062,11 @@ along with this software (see the LICENSE.md file). If not, see
 
             <entity-find-one entity-name="mantle.account.method.PaymentGatewayConfig" value-field="paymentGatewayConfig" cache="true"/>
             <if condition="paymentGatewayConfig == null">
-                <return error="true" message="Not refunding Payment [${paymentId}], could not find PaymentGatewayConfig"/></if>
+                <return error="true" message="Not refunding Payment ${paymentId}, could not find PaymentGatewayConfig"/></if>
 
             <if condition="!paymentGatewayConfig.refundServiceName">
                 <!-- don't blow up on this, we allow no refund service if intentionally configured that way -->
-                <log level="warn" message="Not refunding Payment [${paymentId}], no refundServiceName in PaymentGatewayConfig [${paymentGatewayConfigId}]"/>
+                <log level="warn" message="Not refunding Payment ${paymentId}, no refundServiceName in PaymentGatewayConfig [${paymentGatewayConfigId}]"/>
                 <return/>
             </if>
 
