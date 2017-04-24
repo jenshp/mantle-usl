@@ -79,6 +79,8 @@ class OrderToCashBasicFlow extends Specification {
         ec.entity.tempResetSequencedIdPrimary("mantle.order.OrderHeader")
         ec.entity.tempResetSequencedIdPrimary("mantle.order.OrderItemBilling")
         ec.destroy()
+
+        ec.factory.waitWorkerPoolEmpty(50) // up to 5 seconds
     }
 
     def setup() {
@@ -125,6 +127,11 @@ class OrderToCashBasicFlow extends Specification {
                     shippingTelecomContactMechId:'CustJqpTeln', carrierPartyId:'_NA_', shipmentMethodEnumId:'ShMthGround']).call()
         ec.service.sync().name("mantle.order.OrderServices.place#Order").parameters([orderId:cartOrderId]).call()
 
+        ec.user.logoutUser()
+
+        // explicitly approve order as john.doe (has pre-approve warnings for unavailable inventory so must be done explicitly)
+        ec.user.loginUser("john.doe", "moqui")
+        ec.service.sync().name("mantle.order.OrderServices.approve#Order").parameters([orderId:cartOrderId]).call()
         ec.user.logoutUser()
 
         // NOTE: this has sequenced IDs so is sensitive to run order!
@@ -175,7 +182,7 @@ class OrderToCashBasicFlow extends Specification {
 
             <mantle.product.asset.Asset assetId="55400" acquireCost="8" acquireCostUomId="USD" productId="DEMO_1_1"
                 statusId="AstAvailable" assetTypeEnumId="AstTpInventory" originalQuantity="400" quantityOnHandTotal="400"
-                availableToPromiseTotal="199" facilityId="ORG_ZIZI_RETAIL_WH" ownerPartyId="ORG_ZIZI_RETAIL"
+                availableToPromiseTotal="199" facilityId="ZIRET_WH" ownerPartyId="ORG_ZIZI_RETAIL"
                 hasQuantity="Y" assetName="Demo Product One-One"/>
             <mantle.product.issuance.AssetReservation assetReservationId="55500" assetId="55400" orderId="${cartOrderId}"
                 orderItemSeqId="01" reservedDate="${effectiveTime}" quantity="1" productId="DEMO_1_1" sequenceNum="0"
@@ -185,7 +192,7 @@ class OrderToCashBasicFlow extends Specification {
 
             <mantle.product.asset.Asset assetId="DEMO_3_1A" assetTypeEnumId="AstTpInventory" statusId="AstAvailable"
                 ownerPartyId="ORG_ZIZI_RETAIL" productId="DEMO_3_1" hasQuantity="Y" quantityOnHandTotal="5"
-                availableToPromiseTotal="0" receivedDate="1265184000000" facilityId="ORG_ZIZI_RETAIL_WH"/>
+                availableToPromiseTotal="0" receivedDate="1265184000000" facilityId="ZIRET_WH"/>
             <mantle.product.issuance.AssetReservation assetReservationId="55501" assetId="DEMO_3_1A" productId="DEMO_3_1"
                 orderId="${cartOrderId}" orderItemSeqId="02" reservationOrderEnumId="AsResOrdFifoRec" quantity="5"
                 reservedDate="${effectiveTime}" sequenceNum="0"/>
@@ -195,7 +202,7 @@ class OrderToCashBasicFlow extends Specification {
             <!-- this is an auto-created Asset based on the inventory issuance -->
             <mantle.product.asset.Asset assetId="55500" assetTypeEnumId="AstTpInventory" statusId="AstAvailable"
                 ownerPartyId="ORG_ZIZI_RETAIL" productId="DEMO_2_1" hasQuantity="Y" quantityOnHandTotal="0"
-                availableToPromiseTotal="-7" receivedDate="${effectiveTime}" facilityId="ORG_ZIZI_RETAIL_WH"/>
+                availableToPromiseTotal="-7" receivedDate="${effectiveTime}" facilityId="ZIRET_WH"/>
             <mantle.product.issuance.AssetReservation assetReservationId="55502" assetId="55500" productId="DEMO_2_1"
                 orderId="${cartOrderId}" orderItemSeqId="03" reservationOrderEnumId="AsResOrdFifoRec"
                 quantity="7" quantityNotAvailable="7" reservedDate="${effectiveTime}"/>
@@ -214,7 +221,7 @@ class OrderToCashBasicFlow extends Specification {
         ec.user.loginUser("john.doe", "moqui")
 
         shipResult = ec.service.sync().name("mantle.shipment.ShipmentServices.ship#OrderPart")
-                .parameters([orderId:cartOrderId, orderPartSeqId:orderPartSeqId]).call()
+                .parameters([orderId:cartOrderId, orderPartSeqId:orderPartSeqId, tryAutoPackage:false]).call()
 
         // NOTE: this has sequenced IDs so is sensitive to run order!
         List<String> dataCheckErrors = ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
@@ -234,14 +241,14 @@ class OrderToCashBasicFlow extends Specification {
             <mantle.shipment.ShipmentItemSource shipmentItemSourceId="55501" shipmentId="${shipResult.shipmentId}"
                 productId="DEMO_3_1" orderId="${cartOrderId}" orderItemSeqId="02" statusId="SisPacked" quantity="5"
                 invoiceId="55500" invoiceItemSeqId="02"/>
-            <mantle.shipment.ShipmentPackageContent shipmentId="${shipResult.shipmentId}" shipmentPackageSeqId="01"
+            <mantle.shipment.ShipmentPackageContent shipmentId="${shipResult.shipmentId}" shipmentPackageSeqId="02"
                 productId="DEMO_3_1" quantity="5"/>
 
             <mantle.shipment.ShipmentItem shipmentId="${shipResult.shipmentId}" productId="DEMO_2_1" quantity="7"/>
             <mantle.shipment.ShipmentItemSource shipmentItemSourceId="55502" shipmentId="${shipResult.shipmentId}"
                 productId="DEMO_2_1" orderId="${cartOrderId}" orderItemSeqId="03" statusId="SisPacked" quantity="7"
                 invoiceId="55500" invoiceItemSeqId="03"/>
-            <mantle.shipment.ShipmentPackageContent shipmentId="${shipResult.shipmentId}" shipmentPackageSeqId="01"
+            <mantle.shipment.ShipmentPackageContent shipmentId="${shipResult.shipmentId}" shipmentPackageSeqId="03"
                 productId="DEMO_2_1" quantity="7"/>
 
             <mantle.shipment.ShipmentRouteSegment shipmentId="${shipResult.shipmentId}" shipmentRouteSegmentSeqId="01"
@@ -260,7 +267,8 @@ class OrderToCashBasicFlow extends Specification {
         // NOTE: this has sequenced IDs so is sensitive to run order!
         List<String> dataCheckErrors = ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
             <!-- OrderHeader status to Completed -->
-            <mantle.order.OrderHeader orderId="${cartOrderId}" statusId="OrderCompleted"/>
+            <mantle.order.OrderHeader orderId="${cartOrderId}" entryDate="${effectiveTime}" placedDate="${effectiveTime}"
+                statusId="OrderCompleted" currencyUomId="USD" productStoreId="POPC_DEFAULT" grandTotal="${kieEnabled ? '145.68' : '140.68'}"/>
         </entity-facade-xml>""").check()
         logger.info("validate Sales Order Complete data check results: " + dataCheckErrors)
 
@@ -372,12 +380,15 @@ class OrderToCashBasicFlow extends Specification {
             <mantle.order.OrderItemBilling orderItemBillingId="55502" orderId="${cartOrderId}" orderItemSeqId="03"
                 invoiceId="55500" invoiceItemSeqId="03" assetIssuanceId="55502" shipmentId="${shipResult.shipmentId}"
                 quantity="7" amount="12.12"/>
-
-            <mantle.account.invoice.InvoiceItem invoiceId="55500" invoiceItemSeqId="04" itemTypeEnumId="ItemShipping"
-                quantity="1" amount="${kieEnabled ? '5' : '0'}" description="Ground Parcel" itemDate="${effectiveTime}"/>
-            <mantle.order.OrderItemBilling orderItemBillingId="55503" orderId="${cartOrderId}" orderItemSeqId="04"
-                invoiceId="55500" invoiceItemSeqId="04" shipmentId="${shipResult.shipmentId}" quantity="1" amount="${kieEnabled ? '5' : '0'}"/>
         </entity-facade-xml>""").check()
+        if (kieEnabled) {
+            dataCheckErrors += ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
+                <mantle.account.invoice.InvoiceItem invoiceId="55500" invoiceItemSeqId="04" itemTypeEnumId="ItemShipping"
+                    quantity="1" amount="5" description="Ground Parcel" itemDate="${effectiveTime}"/>
+                <mantle.order.OrderItemBilling orderItemBillingId="55503" orderId="${cartOrderId}" orderItemSeqId="04"
+                    invoiceId="55500" invoiceItemSeqId="04" shipmentId="${shipResult.shipmentId}" quantity="1" amount="${kieEnabled ? '5' : '0'}"/>
+            </entity-facade-xml>""").check()
+        }
         logger.info("validate Shipment Invoice data check results: " + dataCheckErrors)
 
         then:

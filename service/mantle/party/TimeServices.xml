@@ -12,7 +12,7 @@ You should have received a copy of the CC0 Public Domain Dedication
 along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
-<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.0.xsd">
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.1.xsd">
 
     <service verb="get" noun="DescendantPeriods">
         <in-parameters>
@@ -57,15 +57,22 @@ along with this software (see the LICENSE.md file). If not, see
                         <econdition field-name="timePeriodTypeId" from="childPeriodType.timePeriodTypeId"/>
                         <order-by field-name="-thruDate"/>
                     </entity-find>
-                    <if condition="!mostRecentPeriodList"><return error="true" message="No previous TimePeriod found for organization ${parentPeriod.partyId} and type ${childPeriodType.timePeriodTypeId}"/></if>
+                    <if condition="mostRecentPeriodList"><then>
+                        <set field="lastChildPeriod" from="mostRecentPeriodList.get(0)"/>
+                    </then><else>
+                        <service-call name="mantle.party.TimeServices.getOrCreate#TimePeriod" out-map="lastChildOut"
+                                in-map="[partyId:parentPeriod.partyId, timePeriodTypeId:childPeriodType.timePeriodTypeId,
+                                    fromDate:parentPeriod.fromDate, parentPeriodId:parentPeriod.timePeriodId]"/>
+                        <set field="lastChildPeriod" from="lastChildOut.timePeriod"/>
+                        <script>childPeriodList.add(lastChildPeriod)</script>
+                    </else></if>
 
                     <!-- create next periods until we're to/past the thruDate of the current parentPeriod -->
-                    <set field="lastChildPeriod" from="mostRecentPeriodList.get(0)"/>
                     <while condition="lastChildPeriod.thruDate &lt; parentPeriod.thruDate">
                         <service-call name="mantle.party.TimeServices.getOrCreate#NextTimePeriod" out-map="createNextChildOut"
                                       in-map="[timePeriodId:lastChildPeriod.timePeriodId]" out-map-add-to-existing="false"/>
                         <set field="lastChildPeriod" from="createNextChildOut.nextTimePeriod"/>
-                        <script>childPeriodList.add(createNextChildOut.nextTimePeriod)</script>
+                        <script>childPeriodList.add(lastChildPeriod)</script>
                     </while>
                 </else></if>
             </if>

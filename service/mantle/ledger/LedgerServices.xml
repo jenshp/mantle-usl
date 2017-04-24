@@ -12,13 +12,13 @@ You should have received a copy of the CC0 Public Domain Dedication
 along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
-<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.0.xsd">
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.1.xsd">
 
     <service verb="create" noun="GlAccount" type="entity-auto">
         <in-parameters>
             <auto-parameters entity-name="mantle.ledger.account.GlAccount"/>
             <parameter name="glAccountId" default="accountCode"/>
-            <parameter name="accountCode" required="true"/>
+            <parameter name="accountCode" required="true"><matches regexp="\d*" message="Enter digits only, masking is added on display"/></parameter>
             <parameter name="accountName" required="true"/>
             <parameter name="glAccountClassEnumId" required="true"/>
             <parameter name="glResourceTypeEnumId" default-value="GlrtMoney"/>
@@ -31,6 +31,8 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="sourcePartyId" required="true"/>
             <parameter name="organizationPartyId" required="true"/>
             <auto-parameters entity-name="mantle.ledger.config.PartyAcctgPreference" include="nonpk"/>
+            <parameter name="startYear" format="0000"><description>If specified creates fiscal time periods (year, quarter, month) starting that
+                year and through the following year, otherwise starts now and creates current and next year, quarter, and month</description></parameter>
         </in-parameters>
         <actions>
             <entity-find-one entity-name="mantle.ledger.config.PartyAcctgPreference" value-field="existingPartyAcctgPreference">
@@ -119,8 +121,30 @@ along with this software (see the LICENSE.md file). If not, see
             <!-- TODO: CreditCardTypeGlAccount, GlAccountTypePartyDefault, ProductCategoryGlAccount, ProductGlAccount, TaxAuthorityGlAccount, VarianceReasonGlAccount -->
 
             <!-- setup mantle.party.time.TimePeriod for FiscalMonth, FiscalQuarter, FiscalYear -->
-            <service-call name="mantle.ledger.LedgerServices.check#NextFiscalTimePeriods"
-                    in-map="[organizationPartyId:organizationPartyId]"/>
+            <if condition="startYear"><then>
+                <set field="nextYearInt" from="((Calendar) ec.user.nowCalendar).get(Calendar.YEAR) + 1"/>
+                <set field="lastYear" from="ec.l10n.format(nextYearInt, '0000')"/>
+
+                <set field="curYear" from="startYear"/>
+                <set field="prevPeriodId" from="null"/>
+                <while condition="curYear &lt;= lastYear">
+                    <set field="fromDate" from="ec.l10n.parseDate(curYear + '-01-01', 'yyyy-MM-dd')"/>
+                    <service-call name="mantle.party.TimeServices.getOrCreate#TimePeriod" out-map="curYearOut"
+                            in-map="[partyId:organizationPartyId, timePeriodTypeId:'FiscalYear', fromDate:fromDate, previousPeriodId:prevPeriodId]"/>
+                    <service-call name="mantle.party.TimeServices.get#DescendantPeriods" out-map="quartersOut"
+                            in-map="[parentPeriodId:curYearOut.timePeriodId, timePeriodTypeId:'FiscalQuarter', createMissing:true]"/>
+                    <iterate list="quartersOut.timePeriodList" entry="quarterPeriod">
+                        <service-call name="mantle.party.TimeServices.get#DescendantPeriods" out-map="quartersOut"
+                                in-map="[parentPeriodId:quarterPeriod.timePeriodId, timePeriodTypeId:'FiscalMonth', createMissing:true]"/>
+                    </iterate>
+
+                    <set field="prevPeriodId" from="curYearOut.timePeriodId"/>
+                    <set field="curYear" from="((curYear as int) + 1) as String"/>
+                </while>
+            </then><else>
+                <service-call name="mantle.ledger.LedgerServices.check#NextFiscalTimePeriods"
+                        in-map="[organizationPartyId:organizationPartyId]"/>
+            </else></if>
         </actions>
     </service>
 
@@ -745,6 +769,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="organizationPartyId" required="true"/>
             <parameter name="filterDate" type="Timestamp"/>
             <parameter name="timePeriodTypeId"/>
+            <parameter name="term"/>
         </in-parameters>
         <out-parameters><parameter name="timePeriodList" type="List"/></out-parameters>
         <actions>
@@ -757,6 +782,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <econdition field-name="periodPurposeEnumId" value="Fiscal" ignore="timePeriodTypeId"/>
                 <econdition field-name="partyId" from="organizationPartyId"/>
                 <econdition field-name="timePeriodTypeId" ignore-if-empty="true"/>
+                <econdition field-name="periodName" operator="like" value="%${term}%" ignore-case="true"/>
             </entity-find>
 
             <if condition="!timePeriodList">
@@ -770,7 +796,7 @@ along with this software (see the LICENSE.md file). If not, see
                 </entity-find>
                 <if condition="partyRelationshipList">
                     <service-call name="mantle.ledger.LedgerServices.get#OrganizationFiscalTimePeriods" out-map="parentPeriodsOut"
-                            in-map="[organizationPartyId:partyRelationshipList[0].toPartyId, filterDate:filterDate]"/>
+                            in-map="[organizationPartyId:partyRelationshipList[0].toPartyId, filterDate:filterDate, timePeriodTypeId:timePeriodTypeId, term:term]"/>
                     <set field="parentOrgPeriodList" from="parentPeriodsOut.timePeriodList"/>
 
                     <!-- if periods are from a parent org, create clone for this org -->
@@ -1136,8 +1162,8 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
 
-    <service verb="recalculate" noun="GlAccountOrgSummaries" semaphore="fail" semaphore-parameter="organizationPartyId"
-             authenticate="anonymous-all" transaction-timeout="600">
+    <service verb="recalculate" noun="GlAccountOrgSummaries" semaphore="wait" semaphore-parameter="organizationPartyId"
+             authenticate="anonymous-all" transaction-timeout="1800">
         <!-- NOTE: this service is not protected for authz/authc so that it can run in background; don't expose to unprotected access -->
         <in-parameters>
             <parameter name="organizationPartyId"/>
@@ -1164,6 +1190,8 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="noTxOrgPartyIds" from="new TreeSet()"/>
             <set field="glAccountRootClassMap" from="[:]"/>
 
+            <log level="info" message="[Recalculate GlAccountOrgSummaries] lastRunTime ${lastRunTime}, ${timePeriodList.size()} time periods, organizations: ${organizationPartyIds}"/>
+
             <!-- for specified or all org create/update GlAccountOrganization.postedBalance -->
             <!-- TODO: consider not doing this and find some other approach... goes back to all posted transactions; we have
                 balanceLastUpdated but then would have to do query for each existing GlAccountOrganization record, and then an
@@ -1182,6 +1210,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <script>noTxOrgPartyIds.add(organizationPartyId)</script>
                         <continue/>
                     </if>
+                    <log level="info" message="[Recalculate GlAccountOrgSummaries] org ${organizationPartyId} has tx posted ${latestTransList[0].postedDate} so recalculating summaries"/>
                 </if>
 
                 <!-- do the big query to get latest totals -->

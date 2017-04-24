@@ -15,12 +15,12 @@
 import org.moqui.Moqui
 import org.moqui.context.ExecutionContext
 import org.moqui.entity.EntityList
-import org.moqui.entity.EntityValue
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import spock.lang.Shared
 import spock.lang.Specification
 
+import java.sql.Date
 import java.sql.Timestamp
 
 /* To run these make sure moqui, and mantle are in place and run:
@@ -28,29 +28,17 @@ import java.sql.Timestamp
    Or to quick run with saved DB copy use "gradle loadSave" once then each time "gradle reloadSave runtime/mantle/mantle-usl:test"
  */
 class OrderProcureToPayBasicFlow extends Specification {
-    @Shared
-    protected final static Logger logger = LoggerFactory.getLogger(OrderProcureToPayBasicFlow.class)
-    @Shared
-    ExecutionContext ec
-    @Shared
-    String purchaseOrderId = null, orderPartSeqId
-    @Shared
-    Map setInfoOut, shipResult, sendPmtResult
-    @Shared
-    String vendorPartyId = 'ZiddlemanInc', customerPartyId = 'ORG_ZIZI_RETAIL'
-    @Shared
-    String priceUomId = 'USD', currencyUomId = 'USD'
-    @Shared
-    String facilityId = 'ORG_ZIZI_RETAIL_WH'
-    @Shared
-    long effectiveTime = System.currentTimeMillis()
-    @Shared
-    java.sql.Date eolDate
-    @Shared
-    String equip1AssetId, equip2AssetId, currentFiscalMonthId
-    @Shared
-    long totalFieldsChecked = 0
-
+    @Shared protected final static Logger logger = LoggerFactory.getLogger(OrderProcureToPayBasicFlow.class)
+    @Shared ExecutionContext ec
+    @Shared String purchaseOrderId = null, orderPartSeqId
+    @Shared Map setInfoOut, shipResult, sendPmtResult
+    @Shared String vendorPartyId = 'ZiddlemanInc', customerPartyId = 'ORG_ZIZI_RETAIL'
+    @Shared String priceUomId = 'USD', currencyUomId = 'USD'
+    @Shared String facilityId = 'ZIRET_WH'
+    @Shared long effectiveTime = System.currentTimeMillis()
+    @Shared java.sql.Date eolDate
+    @Shared String equip1AssetId, equip2AssetId, currentFiscalMonthId
+    @Shared long totalFieldsChecked = 0
 
     def setupSpec() {
         // init the framework, get the ec
@@ -65,6 +53,7 @@ class OrderProcureToPayBasicFlow extends Specification {
         ec.entity.tempSetSequencedIdPrimary("mantle.product.asset.Asset", 55400, 10)
         ec.entity.tempSetSequencedIdPrimary("mantle.product.asset.AssetDetail", 55400, 90)
         ec.entity.tempSetSequencedIdPrimary("mantle.product.asset.PhysicalInventory", 55400, 10)
+        ec.entity.tempSetSequencedIdPrimary("mantle.product.asset.Lot", 55400, 10)
         ec.entity.tempSetSequencedIdPrimary("mantle.product.receipt.AssetReceipt", 55400, 10)
         ec.entity.tempSetSequencedIdPrimary("mantle.product.issuance.AssetIssuance", 55400, 10)
         ec.entity.tempSetSequencedIdPrimary("mantle.account.invoice.Invoice", 55400, 10)
@@ -83,6 +72,7 @@ class OrderProcureToPayBasicFlow extends Specification {
         ec.entity.tempResetSequencedIdPrimary("mantle.product.asset.Asset")
         ec.entity.tempResetSequencedIdPrimary("mantle.product.asset.AssetDetail")
         ec.entity.tempResetSequencedIdPrimary("mantle.product.asset.PhysicalInventory")
+        ec.entity.tempResetSequencedIdPrimary("mantle.product.asset.Lot")
         ec.entity.tempResetSequencedIdPrimary("mantle.product.receipt.AssetReceipt")
         ec.entity.tempResetSequencedIdPrimary("mantle.product.issuance.AssetIssuance")
         ec.entity.tempResetSequencedIdPrimary("mantle.account.invoice.Invoice")
@@ -265,10 +255,14 @@ class OrderProcureToPayBasicFlow extends Specification {
 
         ec.service.sync().name("mantle.shipment.ShipmentServices.receive#ShipmentProduct")
                 .parameters([shipmentId:shipResult.shipmentId, productId:'DEMO_1_1',
-                    quantityAccepted:400, facilityId:facilityId]).call()
+                    quantityAccepted:400, facilityId:facilityId, locationSeqId:"01010101", lotNumber:'A1111',
+                    manufacturedDate:new Timestamp(effectiveTime - (3600000L*24*14)),
+                    expectedEndOfLife:new Date(effectiveTime + (3600000L*24*180))]).call()
         ec.service.sync().name("mantle.shipment.ShipmentServices.receive#ShipmentProduct")
                 .parameters([shipmentId:shipResult.shipmentId, productId:'DEMO_3_1',
-                    quantityAccepted:100, facilityId:facilityId]).call()
+                    quantityAccepted:100, facilityId:facilityId, locationSeqId:"01020101", lotNumber:'A2222',
+                    manufacturedDate:new Timestamp(effectiveTime - (3600000L*24*14)),
+                    expectedEndOfLife:new Date(effectiveTime + (3600000L*24*240))]).call()
 
         // receive equipment with depreciation settings, in real use more likely set after receive with an update of the Asset record
         Calendar eolCal = ec.user.nowCalendar // will be set to effectiveTime, which will be the acquiredDate
@@ -595,7 +589,7 @@ class OrderProcureToPayBasicFlow extends Specification {
                     amount="10,000" glAccountTypeEnumId="GatUnreceivedFixedAsset" glAccountId="139100000"
                     reconcileStatusId="AterNot" isSummary="N" productId="EQUIP_1" invoiceItemSeqId="04"/>
                 <mantle.ledger.transaction.AcctgTransEntry acctgTransEntrySeqId="05" debitCreditFlag="D"
-                    amount="145" glAccountTypeEnumId="" glAccountId="519000000" reconcileStatusId="AterNot"
+                    amount="145" glAccountTypeEnumId="" glAccountId="519100000" reconcileStatusId="AterNot"
                     isSummary="N" invoiceItemSeqId="05"/>
 
                 <mantle.ledger.transaction.AcctgTransEntry acctgTransEntrySeqId="06" debitCreditFlag="C"
@@ -873,7 +867,7 @@ class OrderProcureToPayBasicFlow extends Specification {
                     <mantle.ledger.transaction.AcctgTransEntry amount="283.33" productId="EQUIP_1" glAccountId="182000000"
                             reconcileStatusId="AterNot" invoiceItemSeqId="01" isSummary="N"
                             glAccountTypeEnumId="GatFaAccumDepreciation" debitCreditFlag="D" assetId="${equip1AssetId}" acctgTransEntrySeqId="02"/>
-                    <mantle.ledger.transaction.AcctgTransEntry amount="716.67" productId="EQUIP_1" glAccountId="793000000"
+                    <mantle.ledger.transaction.AcctgTransEntry amount="716.67" productId="EQUIP_1" glAccountId="793100000"
                             reconcileStatusId="AterNot" invoiceItemSeqId="01" isSummary="N" debitCreditFlag="D"
                             assetId="${equip1AssetId}" acctgTransEntrySeqId="03"/>
                     <mantle.ledger.transaction.AcctgTransEntry amount="9000" glAccountId="121000000"
@@ -985,7 +979,7 @@ class OrderProcureToPayBasicFlow extends Specification {
                     <mantle.ledger.transaction.AcctgTransEntry amount="141.67" productId="EQUIP_1" glAccountId="182000000"
                             reconcileStatusId="AterNot" invoiceItemSeqId="01" isSummary="N"
                             glAccountTypeEnumId="GatFaAccumDepreciation" debitCreditFlag="D" assetId="${equip2AssetId}" acctgTransEntrySeqId="02"/>
-                    <mantle.ledger.transaction.AcctgTransEntry amount="1141.67" productId="EQUIP_1" glAccountId="814000000"
+                    <mantle.ledger.transaction.AcctgTransEntry amount="1141.67" productId="EQUIP_1" glAccountId="814100000"
                             reconcileStatusId="AterNot" invoiceItemSeqId="01" isSummary="N" debitCreditFlag="C"
                             assetId="${equip2AssetId}" acctgTransEntrySeqId="03"/>
                     <mantle.ledger.transaction.AcctgTransEntry amount="11000" glAccountId="121000000"
@@ -1005,9 +999,9 @@ class OrderProcureToPayBasicFlow extends Specification {
                     postedCredits="425" postedDebits="425" endingBalance="0" organizationPartyId="ORG_ZIZI_RETAIL"/>
             <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="672000000" timePeriodId="${currentFiscalMonthId}"
                     postedDebits="425" endingBalance="425" organizationPartyId="ORG_ZIZI_RETAIL"/>
-            <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="814000000" timePeriodId="${currentFiscalMonthId}"
+            <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="814100000" timePeriodId="${currentFiscalMonthId}"
                     postedCredits="1141.67" endingBalance="1141.67" organizationPartyId="ORG_ZIZI_RETAIL"/>
-            <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="793000000" timePeriodId="${currentFiscalMonthId}"
+            <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="793100000" timePeriodId="${currentFiscalMonthId}"
                     postedDebits="716.67" endingBalance="716.67" organizationPartyId="ORG_ZIZI_RETAIL"/>
         </entity-facade-xml>""").check(dataCheckErrors)
         totalFieldsChecked += fieldsChecked
@@ -1056,14 +1050,14 @@ class OrderProcureToPayBasicFlow extends Specification {
     def "inventory Found"() {
         when:
         ec.service.sync().name("mantle.product.AssetServices.record#PhysicalInventoryChange")
-                .parameters([productId:'DEMO_1_1', facilityId:facilityId, quantityChange:10,
+                .parameters([productId:'DEMO_1_1', facilityId:facilityId, quantityChange:10, lotId:'55400', locationSeqId:'01010201',
                              varianceReasonEnumId:'InVrFound', comments:'Test found 10 DEMO_1_1']).call()
 
         List<String> dataCheckErrors = []
         long fieldsChecked = ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
             <assets assetId="55406" productId="DEMO_1_1" statusId="AstAvailable" assetTypeEnumId="AstTpInventory"
                     receivedDate="${effectiveTime}" acquiredDate="${effectiveTime}" quantityOnHandTotal="10" availableToPromiseTotal="10"
-                    facilityId="ORG_ZIZI_RETAIL_WH" classEnumId="AsClsInventoryFin" ownerPartyId="ORG_ZIZI_RETAIL" hasQuantity="Y"/>
+                    facilityId="ZIRET_WH" classEnumId="AsClsInventoryFin" ownerPartyId="ORG_ZIZI_RETAIL" hasQuantity="Y"/>
             <mantle.product.asset.PhysicalInventory physicalInventoryId="55401" physicalInventoryDate="${effectiveTime}"
                     comments="Test found 10 DEMO_1_1" partyId="EX_JOHN_DOE">
                 <mantle.product.asset.AssetDetail assetDetailId="55419" assetId="55406" productId="DEMO_1_1"
@@ -1073,7 +1067,7 @@ class OrderProcureToPayBasicFlow extends Specification {
                     isPosted="Y" assetId="55406" acctgTransTypeEnumId="AttInventoryVariance" physicalInventoryId="55401"
                     glFiscalTypeEnumId="GLFT_ACTUAL" transactionDate="${effectiveTime}" organizationPartyId="ORG_ZIZI_RETAIL">
                 <mantle.ledger.transaction.AcctgTransEntry acctgTransEntrySeqId="01" amount="75" productId="DEMO_1_1"
-                        glAccountId="816000000" reconcileStatusId="AterNot" isSummary="N"
+                        glAccountId="814300000" reconcileStatusId="AterNot" isSummary="N"
                         glAccountTypeEnumId="GatInvFound" debitCreditFlag="C" assetId="55406"/>
                 <mantle.ledger.transaction.AcctgTransEntry acctgTransEntrySeqId="02" amount="75" productId="DEMO_1_1"
                         glAccountId="141300000" reconcileStatusId="AterNot" isSummary="N"

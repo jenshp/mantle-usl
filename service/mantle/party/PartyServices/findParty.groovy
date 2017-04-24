@@ -25,12 +25,15 @@ ExecutionContext ec = context.ec
 // NOTE: doing a find with a static view-entity because the Entity Facade will only select the fields specified and the
 //     join in the associated member-entities
 EntityFind ef = ec.entity.find("mantle.party.FindPartyView").distinct(true)
+// don't do distinct, SQL quandary with distinct, limited select, and order by with upper needing to be selected; seems to get good results in general without: .distinct(true)
 
 ef.selectField("partyId")
 
 if (partyId) { ef.condition(ec.entity.conditionFactory.makeCondition("partyId", EntityCondition.LIKE, (leadingWildcard ? "%" : "") + partyId + "%").ignoreCase()) }
 if (pseudoId) { ef.condition(ec.entity.conditionFactory.makeCondition("pseudoId", EntityCondition.LIKE, (leadingWildcard ? "%" : "") + pseudoId + "%").ignoreCase()) }
 if (partyTypeEnumId) { ef.condition("partyTypeEnumId", partyTypeEnumId) }
+if (disabled) { ef.condition("disabled", disabled) }
+if (hasDuplicates) { ef.condition("hasDuplicates", hasDuplicates) }
 if (roleTypeId) { ef.condition("roleTypeId", roleTypeId) }
 if (username) { ef.condition(ec.entity.conditionFactory.makeCondition("username", EntityCondition.LIKE, (leadingWildcard ? "%" : "") + username + "%").ignoreCase()) }
 
@@ -73,8 +76,8 @@ if (contactOwnerPartyId) {
 
 if (orderByField) {
     if (orderByField.contains("combinedName")) {
-        if (orderByField.contains("-")) ef.orderBy("-^organizationName,-^firstName,-^lastName")
-        else ef.orderBy("^organizationName,^firstName,^lastName")
+        if (orderByField.contains("-")) ef.orderBy("-organizationName,-firstName,-lastName")
+        else ef.orderBy("organizationName,firstName,lastName")
     } else {
         ef.orderBy(orderByField)
     }

@@ -91,6 +91,7 @@ class ReturnToResponseBasicFlow extends Specification {
         ec.entity.tempResetSequencedIdPrimary("mantle.shipment.Shipment")
         ec.entity.tempResetSequencedIdPrimary("mantle.shipment.ShipmentItemSource")
         ec.destroy()
+        ec.factory.waitWorkerPoolEmpty(50) // up to 5 seconds
 
         logger.info("Return to Response Basic Flow complete, ${totalFieldsChecked} record fields checked")
     }
@@ -130,7 +131,7 @@ class ReturnToResponseBasicFlow extends Specification {
 
         List<String> dataCheckErrors = []
         long fieldsChecked = ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
-            <returns returnId="55700" facilityId="ORG_ZIZI_RETAIL_WH" entryDate="${effectiveTime}"
+            <returns returnId="55700" facilityId="ZIRET_WH" entryDate="${effectiveTime}"
                     shipmentMethodEnumId="ShMthGround" vendorPartyId="ORG_ZIZI_RETAIL" telecomContactMechId="CustJqpTeln"
                     postalContactMechId="CustJqpAddr" carrierPartyId="_NA_" currencyUomId="USD" statusId="ReturnRequested"
                     paymentMethodId="CustJqpCc" customerPartyId="CustJqp">
@@ -184,7 +185,8 @@ class ReturnToResponseBasicFlow extends Specification {
 
         // receive Return Shipment
         // triggers SECA rules to receive ReturnItems
-        ec.service.sync().name("mantle.shipment.ShipmentServices.receive#EntireShipment").parameters([shipmentId:returnShipmentId]).call()
+        ec.service.sync().name("mantle.shipment.ShipmentServices.receive#EntireShipment")
+                .parameters([shipmentId:returnShipmentId, statusId:'AstOnHold']).call()
 
         List<String> dataCheckErrors = []
         long fieldsChecked = ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
@@ -203,7 +205,7 @@ class ReturnToResponseBasicFlow extends Specification {
                         returnId="55700" returnItemSeqId="02"/>
                 </items>
                 <routeSegments shipmentRouteSegmentSeqId="01" shipmentMethodEnumId="ShMthGround"
-                    destinationFacilityId="ORG_ZIZI_RETAIL_WH" originPostalContactMechId="CustJqpAddr"
+                    destinationFacilityId="ZIRET_WH" originPostalContactMechId="CustJqpAddr"
                     carrierPartyId="_NA_" originTelecomContactMechId="CustJqpTeln"/>
             </shipments>
         </entity-facade-xml>""").check(dataCheckErrors)
@@ -263,10 +265,10 @@ class ReturnToResponseBasicFlow extends Specification {
         when:
         List<String> dataCheckErrors = []
         long fieldsChecked = ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
-            <orders orderId="55700" entryDate="${effectiveTime}" grandTotal="0" orderRevision="7" currencyUomId="USD"
+            <orders orderId="55700" entryDate="${effectiveTime}" grandTotal="0" currencyUomId="USD"
                     statusId="OrderApproved" placedDate="${effectiveTime}">
-                <parts shipmentMethodEnumId="ShMthGround" telecomContactMechId="CustJqpTeln" postalContactMechId="CustJqpAddr" partTotal="0" customerPartyId="CustJqp" lastUpdatedStamp="1450573654119" facilityId="ORG_ZIZI_RETAIL_WH" vendorPartyId="ORG_ZIZI_RETAIL" carrierPartyId="_NA_" statusId="OrderApproved" orderPartSeqId="01"/>
-                <items orderItemSeqId="01" isModifiedPrice="N" itemTypeEnumId="ItemProduct" quantity="1"
+                <parts shipmentMethodEnumId="ShMthGround" telecomContactMechId="CustJqpTeln" postalContactMechId="CustJqpAddr" partTotal="0" customerPartyId="CustJqp" lastUpdatedStamp="1450573654119" facilityId="ZIRET_WH" vendorPartyId="ORG_ZIZI_RETAIL" carrierPartyId="_NA_" statusId="OrderApproved" orderPartSeqId="01"/>
+                <items orderItemSeqId="01" isModifiedPrice="Y" itemTypeEnumId="ItemProduct" quantity="1"
                         itemDescription="Demo Product One-One" productId="DEMO_1_1" unitAmount="0" orderPartSeqId="01">
                     <reservations assetReservationId="55700" assetId="55400" reservedDate="${effectiveTime}" quantity="1"
                             productId="DEMO_1_1" sequenceNum="0" quantityNotIssued="1" quantityNotAvailable="0"
@@ -356,7 +358,7 @@ class ReturnToResponseBasicFlow extends Specification {
                 </packages>
                 <routeSegments shipmentRouteSegmentSeqId="01" shipmentMethodEnumId="ShMthGround"
                         actualStartDate="${effectiveTime}" destTelecomContactMechId="CustJqpTeln"
-                        originFacilityId="ORG_ZIZI_RETAIL_WH" destPostalContactMechId="CustJqpAddr"/>
+                        originFacilityId="ZIRET_WH" destPostalContactMechId="CustJqpAddr"/>
             </shipments>
         </entity-facade-xml>""").check(dataCheckErrors)
         totalFieldsChecked += fieldsChecked
@@ -373,8 +375,7 @@ class ReturnToResponseBasicFlow extends Specification {
         List<String> dataCheckErrors = []
         long fieldsChecked = ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
             <!-- OrderHeader status to Completed -->
-            <orders orderId="55700" orderRevision="8" statusId="OrderCompleted">
-                <parts orderPartSeqId="01" statusId="OrderCompleted"/></orders>
+            <orders orderId="55700" statusId="OrderCompleted"><parts orderPartSeqId="01" statusId="OrderCompleted"/></orders>
         </entity-facade-xml>""").check(dataCheckErrors)
         totalFieldsChecked += fieldsChecked
         logger.info("Checked ${fieldsChecked} fields")
@@ -444,6 +445,7 @@ class ReturnToResponseBasicFlow extends Specification {
         // ========== ship/etc order as admin
 
         ec.user.loginUser("john.doe", "moqui")
+        ec.service.sync().name("mantle.order.OrderServices.approve#Order").parameters([orderId:orderId]).call()
         ec.service.sync().name("mantle.shipment.ShipmentServices.ship#OrderPart")
                 .parameters([orderId:orderId, orderPartSeqId:orderPartSeqId]).call()
 
