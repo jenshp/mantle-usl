@@ -52,6 +52,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <parameter name="taxRate" type="BigDecimal"/>
                 <parameter name="taxAuthorityId"/>
                 <parameter name="taxName"/>
+                <parameter name="alreadyIncluded"/>
             </parameter></parameter>
         </out-parameters>
     </service>
@@ -130,7 +131,8 @@ along with this software (see the LICENSE.md file). If not, see
                     <service-call name="create#mantle.order.OrderItem" out-map="context"
                             in-map="[orderId:orderId, orderPartSeqId:orderPart.orderPartSeqId, parentItemSeqId:taxResult.itemId,
                                 itemTypeEnumId:'ItemSalesTax', quantity:1, unitAmount:taxAmount, sourcePercentage:(taxResult.taxRate*100.0),
-                                taxAuthorityId:taxResult.taxAuthorityId, itemDescription:itemDescription]"/>
+                                taxAuthorityId:taxResult.taxAuthorityId, itemDescription:itemDescription,
+                                alreadyIncluded:taxResult.alreadyIncluded]"/>
                 </iterate>
             </iterate>
         </actions>
