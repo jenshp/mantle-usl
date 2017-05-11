@@ -723,10 +723,7 @@ class WorkPlanToCashBasicFlow extends Specification {
             <moqui.entity.EntityAuditLog auditHistorySeqId="55964" changedEntityName="mantle.account.payment.Payment"
                 changedFieldName="statusId" pkPrimaryValue="${expPmtResult.paymentId}" newValueText="PmntPromised"
                 changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
-            <moqui.entity.EntityAuditLog auditHistorySeqId="55965" changedEntityName="mantle.account.invoice.Invoice"
-                changedFieldName="statusId" pkPrimaryValue="${expInvResult.invoiceId}" oldValueText="InvoiceApproved"
-                newValueText="InvoicePmtSent" changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
-            <moqui.entity.EntityAuditLog auditHistorySeqId="55966" changedEntityName="mantle.account.payment.Payment"
+            <moqui.entity.EntityAuditLog auditHistorySeqId="55965" changedEntityName="mantle.account.payment.Payment"
                 changedFieldName="statusId" pkPrimaryValue="${expPmtResult.paymentId}" oldValueText="PmntPromised"
                 newValueText="PmntDelivered" changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
             <moqui.entity.EntityAuditLog auditHistorySeqId="55967" changedEntityName="mantle.ledger.transaction.AcctgTrans"
@@ -795,15 +792,16 @@ class WorkPlanToCashBasicFlow extends Specification {
             <mantle.ledger.transaction.AcctgTransEntry acctgTransId="55902" acctgTransEntrySeqId="06" debitCreditFlag="D"
                 amount="1,039.12" glAccountTypeEnumId="GatAccountsReceivable" glAccountId="121000000" reconcileStatusId="AterNot" isSummary="N"/>
 
+            <moqui.entity.EntityAuditLog auditHistorySeqId="55966" changedEntityName="mantle.account.invoice.Invoice"
+                changedFieldName="statusId" pkPrimaryValue="${expInvResult.invoiceId}" oldValueText="InvoiceApproved"
+                newValueText="InvoicePmtSent" changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
             <moqui.entity.EntityAuditLog auditHistorySeqId="55969" changedEntityName="mantle.account.invoice.Invoice"
                 changedFieldName="statusId" pkPrimaryValue="${clientInvResult.invoiceId}" newValueText="InvoiceInProcess"
                 changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
             <moqui.entity.EntityAuditLog auditHistorySeqId="55970" changedEntityName="mantle.account.invoice.Invoice"
                 changedFieldName="statusId" pkPrimaryValue="${expInvResult.invoiceId}" oldValueText="InvoicePmtSent"
                 newValueText="InvoiceBilledThrough" changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
-            <moqui.entity.EntityAuditLog auditHistorySeqId="55971" changedEntityName="mantle.account.invoice.Invoice"
-                changedFieldName="statusId" pkPrimaryValue="${clientInvResult.invoiceId}" oldValueText="InvoiceInProcess"
-                newValueText="InvoiceFinalized" changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
+
             <moqui.entity.EntityAuditLog auditHistorySeqId="55972" changedEntityName="mantle.ledger.transaction.AcctgTrans"
                 changedFieldName="isPosted" pkPrimaryValue="55902" newValueText="N" changedDate="${effectiveTime}"
                 changedByUserId="EX_JOHN_DOE"/>
@@ -843,15 +841,6 @@ class WorkPlanToCashBasicFlow extends Specification {
             <mantle.ledger.transaction.AcctgTransEntry acctgTransId="55903" acctgTransEntrySeqId="02" debitCreditFlag="D"
                 amount="1,039.12" glAccountId="111100000" reconcileStatusId="AterNot" isSummary="N"/>
 
-            <moqui.entity.EntityAuditLog auditHistorySeqId="55974" changedEntityName="mantle.account.payment.Payment"
-                changedFieldName="statusId" pkPrimaryValue="${clientPmtResult.paymentId}" newValueText="PmntPromised"
-                changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
-            <moqui.entity.EntityAuditLog auditHistorySeqId="55975" changedEntityName="mantle.account.invoice.Invoice"
-                changedFieldName="statusId" pkPrimaryValue="${clientInvResult.invoiceId}" oldValueText="InvoiceFinalized"
-                newValueText="InvoicePmtRecvd" changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
-            <moqui.entity.EntityAuditLog auditHistorySeqId="55976" changedEntityName="mantle.account.payment.Payment"
-                changedFieldName="statusId" pkPrimaryValue="${clientPmtResult.paymentId}" oldValueText="PmntPromised"
-                newValueText="PmntDelivered" changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
             <moqui.entity.EntityAuditLog auditHistorySeqId="55977" changedEntityName="mantle.ledger.transaction.AcctgTrans"
                 changedFieldName="isPosted" pkPrimaryValue="55903" newValueText="N" changedDate="${effectiveTime}"
                 changedByUserId="EX_JOHN_DOE"/>
@@ -860,7 +849,8 @@ class WorkPlanToCashBasicFlow extends Specification {
                 changedDate="${effectiveTime}" changedByUserId="EX_JOHN_DOE"/>
 
         </entity-facade-xml>""").check()
-        logger.info("record Payment for Client Time and Expense Invoice data check results: " + dataCheckErrors)
+        logger.info("record Payment for Client Time and Expense Invoice data check results: ")
+        for (String dataCheckError in dataCheckErrors) logger.info(dataCheckError)
 
         then:
         dataCheckErrors.size() == 0

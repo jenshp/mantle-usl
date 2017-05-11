@@ -14,8 +14,6 @@
 
 import org.moqui.Moqui
 import org.moqui.context.ExecutionContext
-import org.moqui.entity.EntityList
-import org.moqui.entity.EntityValue
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import spock.lang.Shared
@@ -88,7 +86,7 @@ class AccountingActivities extends Specification {
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
                 .parameters([acctgTransId:acctgTransId, glAccountId:'111100000', debitCreditFlag:'D', amount:100000]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
-                .parameters([acctgTransId:acctgTransId, glAccountId:'333000000', debitCreditFlag:'C', amount:100000]).call()
+                .parameters([acctgTransId:acctgTransId, glAccountId:'331100000', debitCreditFlag:'C', amount:100000]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.post#AcctgTrans").parameters([acctgTransId:acctgTransId]).call()
 
         transOut = ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTrans")
@@ -97,9 +95,9 @@ class AccountingActivities extends Specification {
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
                 .parameters([acctgTransId:acctgTransId, glAccountId:'111100000', debitCreditFlag:'D', amount:125000]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
-                .parameters([acctgTransId:acctgTransId, glAccountId:'333000000', debitCreditFlag:'C', amount:100000]).call()
+                .parameters([acctgTransId:acctgTransId, glAccountId:'331100000', debitCreditFlag:'C', amount:100000]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
-                .parameters([acctgTransId:acctgTransId, glAccountId:'334000000', debitCreditFlag:'C', amount:25000]).call()
+                .parameters([acctgTransId:acctgTransId, glAccountId:'332100000', debitCreditFlag:'C', amount:25000]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.post#AcctgTrans").parameters([acctgTransId:acctgTransId]).call()
 
         transOut = ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTrans")
@@ -108,7 +106,7 @@ class AccountingActivities extends Specification {
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
                 .parameters([acctgTransId:acctgTransId, glAccountId:'111100000', debitCreditFlag:'D', amount:150000]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
-                .parameters([acctgTransId:acctgTransId, glAccountId:'333000000', debitCreditFlag:'C', amount:150000]).call()
+                .parameters([acctgTransId:acctgTransId, glAccountId:'331100000', debitCreditFlag:'C', amount:150000]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.post#AcctgTrans").parameters([acctgTransId:acctgTransId]).call()
 
         // recalculate summaries, create GlAccountOrgTimePeriod records
@@ -119,30 +117,30 @@ class AccountingActivities extends Specification {
             <acctgTrans acctgTransId="55100" organizationPartyId="ORG_ZIZI_RETAIL" amountUomId="USD" isPosted="Y" 
                     acctgTransTypeEnumId="AttCapitalization" glFiscalTypeEnumId="GLFT_ACTUAL" postedDate="${effectiveTime}" transactionDate="${effectiveTime}">
                 <entries acctgTransEntrySeqId="01" amount="100000" glAccountId="111100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="D"/>
-                <entries acctgTransEntrySeqId="02" amount="100000" glAccountId="333000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
+                <entries acctgTransEntrySeqId="02" amount="100000" glAccountId="331100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
             </acctgTrans>
             <acctgTrans acctgTransId="55101" organizationPartyId="ORG_ZIZI_RETAIL" amountUomId="USD" isPosted="Y" 
                     acctgTransTypeEnumId="AttCapitalization" glFiscalTypeEnumId="GLFT_ACTUAL" postedDate="${effectiveTime}" transactionDate="${effectiveTime}">
                 <entries acctgTransEntrySeqId="01" amount="125000" glAccountId="111100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="D"/>
-                <entries acctgTransEntrySeqId="02" amount="100000" glAccountId="333000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
-                <entries acctgTransEntrySeqId="03" amount="25000" glAccountId="334000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
+                <entries acctgTransEntrySeqId="02" amount="100000" glAccountId="331100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
+                <entries acctgTransEntrySeqId="03" amount="25000" glAccountId="332100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
             </acctgTrans>
             <acctgTrans acctgTransId="55102" organizationPartyId="ORG_ZIZI_CORP" amountUomId="USD" isPosted="Y" 
                     acctgTransTypeEnumId="AttCapitalization" glFiscalTypeEnumId="GLFT_ACTUAL" postedDate="${effectiveTime}" transactionDate="${effectiveTime}">
                 <entries acctgTransEntrySeqId="01" amount="150000" glAccountId="111100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="D"/>
-                <entries acctgTransEntrySeqId="02" amount="150000" glAccountId="333000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
+                <entries acctgTransEntrySeqId="02" amount="150000" glAccountId="331100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
             </acctgTrans>
             
             <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="111100000" timePeriodId="${timePeriodId}"
                     postedCredits="0" postedDebits="225000" endingBalance="225000" organizationPartyId="${organizationPartyId}"/>
-            <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="333000000" timePeriodId="${timePeriodId}"
+            <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="331100000" timePeriodId="${timePeriodId}"
                     postedCredits="200000" postedDebits="0" endingBalance="200000" organizationPartyId="${organizationPartyId}"/>
-            <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="334000000" timePeriodId="${timePeriodId}"
+            <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="332100000" timePeriodId="${timePeriodId}"
                     postedCredits="25000" postedDebits="0" endingBalance="25000" organizationPartyId="${organizationPartyId}"/>
 
             <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="111100000" timePeriodId="${timePeriodId2}"
                     postedCredits="0" postedDebits="150000" endingBalance="150000" organizationPartyId="${organizationPartyId2}"/>
-            <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="333000000" timePeriodId="${timePeriodId2}"
+            <mantle.ledger.account.GlAccountOrgTimePeriod glAccountId="331100000" timePeriodId="${timePeriodId2}"
                     postedCredits="150000" postedDebits="0" endingBalance="150000" organizationPartyId="${organizationPartyId2}"/>
         </entity-facade-xml>""").check(dataCheckErrors)
         totalFieldsChecked += fieldsChecked
@@ -156,35 +154,37 @@ class AccountingActivities extends Specification {
 
     def "record Retained Earnings and Dividends Distributable AcctgTrans"() {
         when:
+        // Net Income to Retained Earnings
         Map transOut = ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTrans")
-                .parameters([acctgTransTypeEnumId:'AttInternal', organizationPartyId:organizationPartyId, amountUomId:currencyUomId]).call()
+                .parameters([acctgTransTypeEnumId:'AttPeriodClosing', organizationPartyId:organizationPartyId, amountUomId:currencyUomId]).call()
         String acctgTransId = transOut.acctgTransId
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
-                .parameters([acctgTransId:acctgTransId, glAccountId:'850000000', debitCreditFlag:'D', amount:100]).call()
+                .parameters([acctgTransId:acctgTransId, glAccountId:'850000000', debitCreditFlag:'D', amount:1000]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
-                .parameters([acctgTransId:acctgTransId, glAccountId:'336000000', debitCreditFlag:'C', amount:100]).call()
+                .parameters([acctgTransId:acctgTransId, glAccountId:'335000000', debitCreditFlag:'C', amount:1000]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.post#AcctgTrans").parameters([acctgTransId:acctgTransId]).call()
 
+        // Retained Earnings to Dividends - Common Stock
         transOut = ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTrans")
-                .parameters([acctgTransTypeEnumId:'AttInternal', organizationPartyId:organizationPartyId, amountUomId:currencyUomId]).call()
+                .parameters([acctgTransTypeEnumId:'AttPeriodClosing', organizationPartyId:organizationPartyId, amountUomId:currencyUomId]).call()
         acctgTransId = transOut.acctgTransId
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
-                .parameters([acctgTransId:acctgTransId, glAccountId:'336000000', debitCreditFlag:'D', amount:60]).call()
+                .parameters([acctgTransId:acctgTransId, glAccountId:'335000000', debitCreditFlag:'D', amount:600]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
-                .parameters([acctgTransId:acctgTransId, glAccountId:'335000000', debitCreditFlag:'C', amount:60]).call()
+                .parameters([acctgTransId:acctgTransId, glAccountId:'333100000', debitCreditFlag:'C', amount:600]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.post#AcctgTrans").parameters([acctgTransId:acctgTransId]).call()
 
         List<String> dataCheckErrors = []
         long fieldsChecked = ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
             <acctgTrans acctgTransId="55103" organizationPartyId="ORG_ZIZI_RETAIL" amountUomId="USD" isPosted="Y" 
-                    acctgTransTypeEnumId="AttInternal" glFiscalTypeEnumId="GLFT_ACTUAL" postedDate="${effectiveTime}" transactionDate="${effectiveTime}">
-                <entries acctgTransEntrySeqId="01" amount="100" glAccountId="850000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="D"/>
-                <entries acctgTransEntrySeqId="02" amount="100" glAccountId="336000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
+                    acctgTransTypeEnumId="AttPeriodClosing" glFiscalTypeEnumId="GLFT_ACTUAL" postedDate="${effectiveTime}" transactionDate="${effectiveTime}">
+                <entries acctgTransEntrySeqId="01" amount="1000" glAccountId="850000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="D"/>
+                <entries acctgTransEntrySeqId="02" amount="1000" glAccountId="335000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
             </acctgTrans>
             <acctgTrans acctgTransId="55104" organizationPartyId="ORG_ZIZI_RETAIL" amountUomId="USD" isPosted="Y" 
-                    acctgTransTypeEnumId="AttInternal" glFiscalTypeEnumId="GLFT_ACTUAL" postedDate="${effectiveTime}" transactionDate="${effectiveTime}">
-                <entries acctgTransEntrySeqId="01" amount="60" glAccountId="336000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="D"/>
-                <entries acctgTransEntrySeqId="02" amount="60" glAccountId="335000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
+                    acctgTransTypeEnumId="AttPeriodClosing" glFiscalTypeEnumId="GLFT_ACTUAL" postedDate="${effectiveTime}" transactionDate="${effectiveTime}">
+                <entries acctgTransEntrySeqId="01" amount="600" glAccountId="335000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="D"/>
+                <entries acctgTransEntrySeqId="02" amount="600" glAccountId="333100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
             </acctgTrans>            
         </entity-facade-xml>""").check(dataCheckErrors)
         totalFieldsChecked += fieldsChecked
@@ -202,9 +202,9 @@ class AccountingActivities extends Specification {
                 .parameters([acctgTransTypeEnumId:'AttDisbursement', organizationPartyId:organizationPartyId, amountUomId:currencyUomId]).call()
         String acctgTransId = transOut.acctgTransId
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
-                .parameters([acctgTransId:acctgTransId, glAccountId:'335000000', debitCreditFlag:'D', amount:30]).call()
+                .parameters([acctgTransId:acctgTransId, glAccountId:'333100000', debitCreditFlag:'D', amount:300]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.create#AcctgTransEntry")
-                .parameters([acctgTransId:acctgTransId, glAccountId:'111100000', debitCreditFlag:'C', amount:30]).call()
+                .parameters([acctgTransId:acctgTransId, glAccountId:'111100000', debitCreditFlag:'C', amount:300]).call()
         ec.service.sync().name("mantle.ledger.LedgerServices.post#AcctgTrans").parameters([acctgTransId:acctgTransId]).call()
 
         /* pay out just one of the dividends to see amounts for both in accounts in different states
@@ -222,8 +222,8 @@ class AccountingActivities extends Specification {
         long fieldsChecked = ec.entity.makeDataLoader().xmlText("""<entity-facade-xml>
         <acctgTrans acctgTransId="55105" organizationPartyId="ORG_ZIZI_RETAIL" amountUomId="USD" isPosted="Y" 
                 acctgTransTypeEnumId="AttDisbursement" glFiscalTypeEnumId="GLFT_ACTUAL" postedDate="${effectiveTime}" transactionDate="${effectiveTime}">
-            <entries acctgTransEntrySeqId="01" amount="30" glAccountId="335000000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="D"/>
-            <entries acctgTransEntrySeqId="02" amount="30" glAccountId="111100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
+            <entries acctgTransEntrySeqId="01" amount="300" glAccountId="333100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="D"/>
+            <entries acctgTransEntrySeqId="02" amount="300" glAccountId="111100000" reconcileStatusId="AterNot" isSummary="N" debitCreditFlag="C"/>
         </acctgTrans>
         </entity-facade-xml>""").check(dataCheckErrors)
         totalFieldsChecked += fieldsChecked
