@@ -2,23 +2,50 @@
 Mantle Business Artifacts - Universal Service Library Release Notes
 
 ===========================================================================
-Release 1.1.1 - Not Yet Released
+Release 1.2.0 - Not Yet Released
 ===========================================================================
 
-Mantle Universal Service Library 1.1.1 is a patch new feature and bug fix
-release. This release is based on Moqui Framework ???, mantle-udm ???.
+Mantle Universal Service Library 1.2.0 is a minor feature and bug fix
+release. This release is based on Moqui Framework 2.1.0, mantle-udm 1.2.0.
 
 Non-Backward Compatible Changes
 
 - Moved get#OrderDisplayInfo from OrderServices.xml to OrderInfoServices.xml
 
+New Features Requiring Data Maintenance
+
+- GlAccount now has isDebit, and isTemporary fields populated
+  automatically; for older data run the set#MissingGlAccountFlags
+  service to populate these
+- Invoice now has invoiceTotal, appliedPaymentsTotal, unpaidTotal fields
+  populated automatically; for older data run the
+  calculate#MissingInvoiceTotals service to populate these
+- Payment now has appliedTotal, unappliedTotal fields populated
+  automatically; for older data run the calculate#MissingPaymentTotals
+  service to populate these
+
 New Features
 
+- Applying a Payment not in the Delivered or Confirmed status is no longer
+  allowed and will return with a non-error message when attempted; any
+  custom code that does this will need to be updated
 - GL Account posted summary values on GlAccountOrganization and
   GlAccountOrgTimePeriod are no longer set on the fly by default and are
   instead populated by a scheduled job (recalculate#GlAccountOrgSummaries)
 - RateAmount records may now be changed in place with looked up rate saved
   on TimeEntry and user changeable with permission
+- Improved EECA rules for order updates to better handle calculating part
+  and header totals, triggering shipping/tax/etc services, new support for
+  promotion service trigger, etc
+- New SECA rules to trigger order (placed and approved) and shipment
+  (shipped and delivered) notification emails
+- Improved payment gateway handling
+- New shipping gateway interfaces and high level services for rate quotes,
+  labels, tracking, etc
+- Various improvements to time entry rate handling, new piece + hours
+  option, payroll calculation phases for more flexible payroll processing
+- New services to search for and merge duplicate parties
+- Improved ProductContent services for plain text updates as well as binary
 
 Bug Fixes
 

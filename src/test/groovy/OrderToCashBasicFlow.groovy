@@ -445,11 +445,12 @@ class OrderToCashBasicFlow extends Specification {
                 glFiscalTypeEnumId="GLFT_ACTUAL" amountUomId="USD" otherPartyId="CustJqp"
                 paymentId="${setInfoOut.paymentId}"/>
             <mantle.ledger.transaction.AcctgTransEntry acctgTransId="55503" acctgTransEntrySeqId="01" debitCreditFlag="C"
-                amount="${kieEnabled ? '145.68' : '140.68'}" glAccountId="121000000" reconcileStatusId="AterNot" isSummary="N"/>
+                amount="${kieEnabled ? '145.68' : '140.68'}" glAccountId="126000000" reconcileStatusId="AterNot" isSummary="N"/>
             <mantle.ledger.transaction.AcctgTransEntry acctgTransId="55503" acctgTransEntrySeqId="02" debitCreditFlag="D"
                 amount="${kieEnabled ? '145.68' : '140.68'}" glAccountId="122000000" reconcileStatusId="AterNot" isSummary="N"/>
         </entity-facade-xml>""").check()
-        logger.info("validate Payment Accounting Transaction data check results: " + dataCheckErrors)
+        logger.info("validate Payment Accounting Transaction data check results: ")
+        for (String dataCheckError in dataCheckErrors) logger.info(dataCheckError)
 
         then:
         dataCheckErrors.size() == 0

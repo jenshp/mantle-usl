@@ -30,13 +30,9 @@ along with this software (see the LICENSE.md file). If not, see
 
             <parameter name="address1"/><parameter name="address2"/>
             <parameter name="city"/><parameter name="stateProvinceGeoId"/><parameter name="postalCode"/>
-
             <parameter name="countryCode"/><parameter name="areaCode"/><parameter name="contactNumber"/>
-
             <parameter name="emailAddress"/>
-
             <parameter name="assetSerialNumber"/>
-            <parameter name="contactOwnerPartyId"/>
 
             <parameter name="orderByField" default-value="firstName,organizationName"/>
             <parameter name="pageIndex" type="Integer" default="0"/>
@@ -265,11 +261,12 @@ along with this software (see the LICENSE.md file). If not, see
             <service-call name="store#mantle.party.Person" in-map="context"/>
             <if condition="!prePartyId"><service-call name="store#moqui.security.UserAccount"
                     in-map="[userId:userId, partyId:partyId]"/></if>
-            <if condition="emailAddress"><service-call name="mantle.party.ContactServices.update#PartyContactOther"
-                    in-map="[infoString:emailAddress, partyId:partyId, contactMechPurposeId:'EmailPrimary']"/></if>
+            <if condition="emailAddress"><service-call name="mantle.party.ContactServices.store#PartyContactInfo"
+                    in-map="[partyId:partyId, emailAddress:emailAddress, emailContactMechPurposeId:'EmailPrimary', replaceByPurpose:true]"/></if>
         </actions>
     </service>
     <service verb="create" noun="UserAccountPerson" authenticate="anonymous-all">
+        <description>Create a Person type Party from the data in a UserAccount record</description>
         <in-parameters><parameter name="userId" required="true"/></in-parameters>
         <out-parameters>
             <parameter name="partyId"/>
@@ -281,21 +278,23 @@ along with this software (see the LICENSE.md file). If not, see
             <!-- create Party and set id on UserAccount -->
             <service-call name="create#mantle.party.Party" in-map="[partyTypeEnumId:'PtyPerson', disabled:'N']" out-map="newPartyOut"/>
             <set field="partyId" from="newPartyOut.partyId"/>
-            <set field="userAccount.partyId" from="partyId"/><entity-update value-field="userAccount"/>
+            <!-- add the partyId to the UserAccount -->
+            <set field="userAccount.partyId" from="partyId"/>
+            <entity-update value-field="userAccount"/>
             <!-- create the Person, split the full name -->
-            <set field="firstName" from="userAccount.userFullName"/><set field="lastName" from="null"/>
-            <if condition="firstName.contains(' ')">
+            <set field="firstName" from="userAccount.userFullName ?: userAccount.username"/>
+            <set field="lastName" from="null"/>
+            <if condition="firstName?.contains(' ')">
                 <set field="lastName" from="firstName.substring(firstName.lastIndexOf(' ')+1)"/>
                 <set field="firstName" from="firstName.substring(0, firstName.lastIndexOf(' '))"/>
             </if>
-            <service-call name="create#mantle.party.Person" in-map="[firstName:firstName, lastName:lastName]"/>
+            <service-call name="create#mantle.party.Person" in-map="[partyId:partyId, firstName:firstName, lastName:lastName]"/>
             <!-- add the emailAddress -->
             <if condition="userAccount.emailAddress">
                 <service-call name="mantle.party.ContactServices.create#EmailAddress" out-map="emailOut"
                         in-map="[emailAddress:userAccount.emailAddress, partyId:partyId, contactMechPurposeId:'EmailPrimary']"/>
                 <set field="emailContactMechId" from="emailOut.contactMechId"/>
             </if>
-            <!-- add the partyId to the UserAccount -->
         </actions>
     </service>
 
@@ -325,7 +324,7 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="existingUaList"><return error="true" message="Username [${username}] is already in use. Choose another."/></if>
 
             <!-- handle emailAddress, EmailPrimary -->
-            <entity-find entity-name="mantle.party.contact.PartyContactMechInfo" list="primaryEmailList">
+            <entity-find entity-name="mantle.party.contact.PartyContactMech" list="primaryEmailList">
                 <date-filter/><econdition field-name="partyId"/>
                 <econdition field-name="contactMechPurposeId" value="EmailPrimary"/>
                 <order-by field-name="-fromDate"/>
@@ -333,14 +332,15 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="emailAddress"><then>
                 <if condition="primaryEmailList"><then>
                     <service-call name="mantle.party.ContactServices.update#PartyContactOther"
-                            in-map="[infoString:emailAddress, partyId:partyId, contactMechPurposeId:'EmailPrimary']"/>
+                            in-map="[infoString:emailAddress, partyId:partyId, contactMechId:primaryEmailList[0].contactMechId,
+                                contactMechPurposeId:'EmailPrimary']"/>
                 </then><else>
                     <service-call name="mantle.party.ContactServices.create#EmailAddress" out-map="emailOut"
                             in-map="[emailAddress:emailAddress, partyId:partyId, contactMechPurposeId:'EmailPrimary']"/>
                 </else></if>
             </then><else>
                 <!-- no email address passed? use the EmailPrimary -->
-                <set field="emailAddress" from="primaryEmailList?.first?.infoString"/>
+                <set field="emailAddress" from="primaryEmailList ? primaryEmailList[0].infoString : null"/>
             </else></if>
 
             <entity-find-one entity-name="mantle.party.Person" value-field="person"/>
@@ -380,8 +380,8 @@ along with this software (see the LICENSE.md file). If not, see
                 <set field="userId" from="userAccountList?.first?.userId"/>
             </if>
             <if condition="userId"><service-call name="update#moqui.security.UserAccount" in-map="context"/></if>
-            <if condition="emailAddress"><service-call name="mantle.party.ContactServices.update#PartyContactOther"
-                    in-map="[infoString:emailAddress, partyId:partyId, contactMechPurposeId:'EmailPrimary']"/></if>
+            <if condition="emailAddress"><service-call name="mantle.party.ContactServices.store#PartyContactInfo"
+                    in-map="[partyId:partyId, emailAddress:emailAddress, emailContactMechPurposeId:'EmailPrimary', replaceByPurpose:true]"/></if>
         </actions>
     </service>
 
@@ -431,6 +431,18 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="expireDate" default-value="${expireMonth?:''}/${expireYear?:''}">
                 <time-range after="now" format="MM/yyyy"/></parameter>
             <parameter name="cardNumber"><credit-card/></parameter>
+            <parameter name="validateSecurityCode"/>
+
+            <!-- create#PartyUserAccount fields -->
+            <parameter name="username" default="emailAddress"/>
+            <parameter name="newPassword"><description>If empty won't set a password, user will have to change or reset.</description></parameter>
+            <parameter name="newPasswordVerify"/>
+            <parameter name="disabled" default-value="N"/>
+            <parameter name="requirePasswordChange" default-value="N"/>
+            <parameter name="currencyUomId"/>
+            <parameter name="locale"/>
+            <parameter name="timeZone"/>
+            <parameter name="userGroupId"/>
         </in-parameters>
         <out-parameters>
             <parameter name="partyId"/>
@@ -438,6 +450,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="telecomContactMechId"/>
             <parameter name="emailContactMechId"/>
             <parameter name="paymentMethodId"/>
+            <parameter name="userId"/>
         </out-parameters>
         <actions>
             <service-call name="mantle.party.PartyServices.create#Person" in-map="context" out-map="context"/>
@@ -453,6 +466,9 @@ along with this software (see the LICENSE.md file). If not, see
                 <service-call name="create#mantle.party.PartyRelationship" in-map="[fromDate:ec.user.nowTimestamp,
                         relationshipTypeEnumId:'PrtContact', fromPartyId:partyId, toPartyId:accountPartyId,
                         fromRoleTypeId:'Contact', toRoleTypeId:roleTypeId]"/>
+            </if>
+            <if condition="emailAddress &amp;&amp; newPassword">
+                <service-call name="mantle.party.PartyServices.create#PartyUserAccount" in-map="context" out-map="context"/>
             </if>
         </actions>
     </service>
@@ -749,7 +765,81 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
 
+    <!-- ============================================ -->
+    <!-- ========== Party Setting Services ========== -->
+    <!-- ============================================ -->
+
+    <service verb="get" noun="PartySettingValue">
+        <description>Checks PartyRelationshipSetting first, if a partyRelationshipId is specified, then PartySetting if partyId is
+            specified, then the defaultValue on the PartySettingType.</description>
+        <in-parameters>
+            <parameter name="partySettingTypeId" required="true"/>
+            <parameter name="partyId"/>
+            <parameter name="partyRelationshipId"/>
+        </in-parameters>
+        <out-parameters><parameter name="settingValue"/></out-parameters>
+        <actions>
+            <if condition="partyRelationshipId">
+                <entity-find-one entity-name="mantle.party.PartyRelationshipSetting" value-field="setting">
+                    <field-map field-name="partyRelationshipId"/><field-map field-name="partySettingTypeId"/></entity-find-one>
+            </if>
+            <if condition="partyId &amp;&amp; setting == null">
+                <entity-find-one entity-name="mantle.party.PartySetting" value-field="setting">
+                    <field-map field-name="partyId"/><field-map field-name="partySettingTypeId"/></entity-find-one>
+            </if>
+            <set field="settingValue" from="setting?.settingValue"/>
+            <if condition="!settingValue">
+                <entity-find-one entity-name="mantle.party.PartySettingType" value-field="partySettingType"/>
+                <set field="settingValue" from="partySettingType.defaultValue"/>
+            </if>
+        </actions>
+    </service>
+    <service verb="store" noun="PartySetting">
+        <in-parameters>
+            <parameter name="partySettingTypeId" required="true"/>
+            <parameter name="partyId" required="true"/>
+            <parameter name="settingValue" required="true"/>
+        </in-parameters>
+        <actions>
+            <service-call name="mantle.party.PartyServices.validate#PartySetting" in-map="context"/>
+            <service-call name="store#mantle.party.PartySetting" in-map="context"/>
+        </actions>
+    </service>
+    <service verb="store" noun="PartyRelationshipSetting">
+        <in-parameters>
+            <parameter name="partySettingTypeId" required="true"/>
+            <parameter name="partyRelationshipId" required="true"/>
+            <parameter name="settingValue" required="true"/>
+        </in-parameters>
+        <actions>
+            <service-call name="mantle.party.PartyServices.validate#PartySetting" in-map="context"/>
+            <service-call name="store#mantle.party.PartyRelationshipSetting" in-map="context"/>
+        </actions>
+    </service>
+    <service verb="validate" noun="PartySetting">
+        <in-parameters>
+            <parameter name="partySettingTypeId" required="true"/>
+            <parameter name="settingValue" required="true"/>
+            <parameter name="partyId"/>
+            <parameter name="partyRelationshipId"/>
+        </in-parameters>
+        <actions>
+            <entity-find-one entity-name="mantle.party.PartySettingType" value-field="partySettingType"/>
+            <if condition="partySettingType.enumTypeId"><then>
+                <entity-find-one entity-name="moqui.basic.Enumeration" value-field="valEnum">
+                    <field-map field-name="enumId" from="settingValue"/></entity-find-one>
+                <if condition="valEnum == null || valEnum.enumTypeId != partySettingType.enumTypeId">
+                    <return error="true" message="Selected value ${valEnum.description?:''} is not valid"/></if>
+            </then><else-if condition="partySettingType.validRegexp">
+                <if condition="!settingValue.matches(partySettingType.validRegexp)">
+                    <return error="true" message="Value ${settingValue} is not valid"/></if>
+            </else-if></if>
+        </actions>
+    </service>
+
+    <!-- ================================================= -->
     <!-- ========== Party Notification Services ========== -->
+    <!-- ================================================= -->
 
     <service verb="send" noun="DataDocumentNotifications" authenticate="false">
         <description>

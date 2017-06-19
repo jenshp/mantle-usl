@@ -37,7 +37,7 @@ General Order Placement and eCommerce Usage
 
 -->
 
-    <!-- ========== Order/Part Services ========== -->
+    <!-- ========== Order Header and Part Services ========== -->
 
     <service verb="create" noun="Order">
         <description>
@@ -123,7 +123,10 @@ General Order Placement and eCommerce Usage
             <parameter name="orderPartSeqId" required="true"/>
         </out-parameters>
         <actions>
-            <service-call name="mantle.facility.ContactServices.get#FacilityDefaultShipDest" in-map="context" out-map="context"/>
+            <entity-find-one entity-name="mantle.party.PartyRole" value-field="customerOrgRole">
+                <field-map field-name="partyId" from="customerPartyId"/><field-map field-name="roleTypeId" value="OrgInternal"/></entity-find-one>
+            <if condition="customerOrgRole != null">
+                <service-call name="mantle.facility.ContactServices.get#FacilityDefaultShipDest" in-map="context" out-map="context"/></if>
             <service-call name="create#mantle.order.OrderPart" in-map="context" out-map="context"/>
         </actions>
     </service>
@@ -134,10 +137,17 @@ General Order Placement and eCommerce Usage
             <auto-parameters entity-name="mantle.order.OrderPart" include="nonpk"/>
         </in-parameters>
         <actions>
-            <service-call name="mantle.facility.ContactServices.get#FacilityDefaultShipDest" in-map="context" out-map="context"/>
+            <entity-find-one entity-name="mantle.party.PartyRole" value-field="customerOrgRole">
+                <field-map field-name="partyId" from="customerPartyId"/><field-map field-name="roleTypeId" value="OrgInternal"/></entity-find-one>
+            <if condition="customerOrgRole != null">
+                <service-call name="mantle.facility.ContactServices.get#FacilityDefaultShipDest" in-map="context" out-map="context"/></if>
             <service-call name="update#mantle.order.OrderPart" in-map="context" out-map="context"/>
         </actions>
     </service>
+
+    <!-- ======================================== -->
+    <!-- ========== OrderItem Services ========== -->
+    <!-- ======================================== -->
 
     <service verb="get" noun="OrderItemTotal">
         <in-parameters>
@@ -178,12 +188,10 @@ General Order Placement and eCommerce Usage
         </actions>
     </service>
 
-    <!-- OrderItem Services -->
     <service verb="create" noun="OrderItem" transaction="cache">
         <in-parameters>
             <parameter name="orderId" required="true"/>
             <auto-parameters entity-name="mantle.order.OrderItem" include="nonpk"/>
-
             <parameter name="orderPartSeqId" required="true"/>
             <parameter name="itemTypeEnumId" default-value="ItemProduct"/>
             <parameter name="quantity" type="BigDecimal" default="1"/>
@@ -212,12 +220,12 @@ General Order Placement and eCommerce Usage
             <parameter name="quantity_changeReason"/>
         </in-parameters>
         <actions>
-            <entity-find-one entity-name="mantle.order.OrderItem" value-field="orderItem"/>
+            <entity-find-one entity-name="mantle.order.OrderItem" value-field="orderItem" for-update="true"/>
             <set field="productId" from="productId ?: orderItem.productId"/>
 
             <!-- calculate the price based on quantity, etc, -->
-            <if condition="!unitAmount &amp;&amp; productId"><then>
-                <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"/>
+            <if condition="unitAmount == null &amp;&amp; productId"><then>
+                <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader" for-update="true"/>
                 <set field="orderPart" from="orderItem.part"/>
 
                 <service-call name="mantle.product.PriceServices.get#ProductPrice" out-map="priceMap"
@@ -284,7 +292,7 @@ General Order Placement and eCommerce Usage
             </if>
 
             <service-call name="update#mantle.order.OrderItem" in-map="context"/>
-            <message>Order item ${orderItemSeqId} updated</message>
+            <!-- leave this out, may be nice to have a way to easily ignore messages from a specific service call: <message>Order item ${orderItemSeqId} updated</message> -->
         </actions>
     </service>
     <service verb="delete" noun="OrderItem">
@@ -322,10 +330,14 @@ General Order Placement and eCommerce Usage
             <parameter name="productId" required="true"/>
             <parameter name="description"/>
             <parameter name="quantity" type="BigDecimal"><description>Defaults to 1 if addToQuantity=true (default)</description></parameter>
-            <parameter name="addToQuantity" type="Boolean" default="true"/>
+            <parameter name="addToQuantity" type="Boolean" default="true">
+                <description>If true add to existing quantity, if false set quantity on current item</description></parameter>
+            <parameter name="updateExisting" type="Boolean" default="true">
+                <description>If true update existing item by productId, if false always create a new item</description></parameter>
             <parameter name="itemTypeEnumId" default-value="ItemProduct"/>
             <parameter name="unitAmount" type="BigDecimal"/>
             <parameter name="requiredByDate" type="Timestamp"/>
+            <parameter name="otherPartyProductId"/>
         </in-parameters>
         <out-parameters>
             <parameter name="orderId" required="true"/>
@@ -333,9 +345,9 @@ General Order Placement and eCommerce Usage
             <parameter name="orderItemSeqId" required="true"/>
         </out-parameters>
         <actions>
-            <if condition="quantity == null &amp;&amp; addToQuantity"><set field="quantity" from="1.0"/></if>
+            <if condition="quantity == null &amp;&amp; (addToQuantity || !updateExisting)"><set field="quantity" from="1.0"/></if>
             <!-- handle explicit zero quantity -->
-            <if condition="quantity == null || quantity &lt;= 0">
+            <if condition="(quantity == null || quantity &lt;= 0) &amp;&amp; updateExisting">
                 <!-- do nothing if add -->
                 <if condition="addToQuantity || !orderId"><return/></if>
                 <!-- in set mode remove the item -->
@@ -392,12 +404,6 @@ General Order Placement and eCommerce Usage
                 </if>
             </if>
 
-            <!-- find an OrderItem for the productId and increment quantity if found, otherwise create OrderItem with quantity -->
-            <entity-find entity-name="mantle.order.OrderItem" list="orderItemList">
-                <econdition-object field="[orderId:orderId, orderPartSeqId:orderPartSeqId, productId:productId,
-                        productConfigSavedId:null, forAssetId:null, selectedAmount:null]"/>
-            </entity-find>
-
             <!-- calculate the price based on quantity, etc, -->
             <if condition="unitAmount == null"><then>
                 <service-call name="mantle.product.PriceServices.get#ProductPrice" out-map="priceMap"
@@ -411,11 +417,43 @@ General Order Placement and eCommerce Usage
                 <set field="isModifiedPrice" value="Y"/>
             </else></if>
 
-            <if condition="orderItemList"><then>
+            <!-- look up otherPartyProductId if not specified -->
+            <if condition="!otherPartyProductId &amp;&amp; productId">
+                <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart" for-update="true"/>
+                <entity-find-one entity-name="mantle.party.PartyRole" value-field="vendorOrgRole">
+                    <field-map field-name="partyId" from="orderPart.vendorPartyId"/>
+                    <field-map field-name="roleTypeId" value="OrgInternal"/>
+                </entity-find-one>
+                <if condition="vendorOrgRole != null &amp;&amp; orderPart.customerPartyId"><then>
+                    <entity-find entity-name="mantle.product.ProductPrice" list="otherPartyItemIdList">
+                        <date-filter/><econdition field-name="productId"/>
+                        <econdition field-name="customerPartyId" from="orderPart.customerPartyId"/>
+                        <econdition field-name="otherPartyItemId" operator="is-not-null"/>
+                    </entity-find>
+                    <if condition="otherPartyItemIdList">
+                        <set field="otherPartyProductId" from="otherPartyItemIdList[0].otherPartyItemId"/></if>
+                </then><else-if condition="vendorOrgRole != null &amp;&amp; orderPart.vendorPartyId">
+                    <entity-find entity-name="mantle.product.ProductPrice" list="otherPartyItemIdList">
+                        <date-filter/><econdition field-name="productId"/>
+                        <econdition field-name="vendorPartyId" from="orderPart.vendorPartyId"/>
+                        <econdition field-name="otherPartyItemId" operator="is-not-null"/>
+                    </entity-find>
+                    <if condition="otherPartyItemIdList">
+                        <set field="otherPartyProductId" from="otherPartyItemIdList[0].otherPartyItemId"/></if>
+                </else-if></if>
+            </if>
+
+            <!-- find an OrderItem for the productId and increment quantity if found, otherwise create OrderItem with quantity -->
+            <entity-find entity-name="mantle.order.OrderItem" list="orderItemList">
+                <econdition-object field="[orderId:orderId, orderPartSeqId:orderPartSeqId, productId:productId,
+                        productConfigSavedId:null, forAssetId:null, selectedAmount:null]"/>
+            </entity-find>
+
+            <if condition="orderItemList &amp;&amp; updateExisting"><then>
                 <set field="orderItem" from="orderItemList.first"/>
                 <set field="orderItemSeqId" from="orderItem.orderItemSeqId"/>
                 <set field="orderPartSeqId" from="orderItem.orderPartSeqId" set-if-empty="false"/>
-                <set field="unitAmount" from="orderItem.unitAmount" set-if-empty="false"/>
+                <set field="unitAmount" from="unitAmount != null ? unitAmount : orderItem.unitAmount"/>
                 <set field="quantity" from="addToQuantity ? quantity + orderItem.quantity : quantity"/>
                 <!-- if requiredByDate on orderItem is less than that passed in, make sure to use it instead of the new later one -->
                 <if condition="orderItem.requiredByDate &amp;&amp; requiredByDate &amp;&amp; orderItem.requiredByDate &lt; requiredByDate">
@@ -461,6 +499,10 @@ General Order Placement and eCommerce Usage
             </iterate>
         </actions>
     </service>
+
+    <!-- ===================================================== -->
+    <!-- ========== Order Billing/Shipping Services ========== -->
+    <!-- ===================================================== -->
 
     <service verb="set" noun="OrderBillingShippingInfo">
         <in-parameters>
@@ -593,7 +635,10 @@ General Order Placement and eCommerce Usage
         </actions>
     </service>
 
-    <!-- Order Status Change Services -->
+    <!-- ================================================== -->
+    <!-- ========== Order Status Change Services ========== -->
+    <!-- ================================================== -->
+
     <service verb="change" noun="OrderStatusInterface" type="interface">
         <in-parameters><parameter name="orderId" required="true"/></in-parameters>
         <out-parameters><parameter name="oldStatusId"/><parameter name="statusChanged" type="Boolean"/></out-parameters>
@@ -799,6 +844,10 @@ General Order Placement and eCommerce Usage
         </actions>
     </service>
 
+    <!-- ================================= -->
+    <!-- ========== Clone Order ========== -->
+    <!-- ================================= -->
+
     <service verb="clone" noun="Order">
         <description>Clone an order. Always copies the OrderHeader, OrderPart, and OrderItem records.</description>
         <in-parameters>
@@ -952,6 +1001,10 @@ General Order Placement and eCommerce Usage
                     selectedAmount != originalValue.selectedAmount || orderPartSeqId != originalValue.orderPartSeqId"><then>
                 <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader" for-update="true"/>
                 <service-call name="mantle.order.OrderServices.update#OrderPartTotal" in-map="context"/>
+                <if condition="originalValue &amp;&amp; orderPartSeqId != originalValue.orderPartSeqId">
+                    <service-call name="mantle.order.OrderServices.update#OrderPartTotal"
+                            in-map="[orderId:orderId, orderPartSeqId:originalValue.orderPartSeqId]"/>
+                </if>
 
                 <if condition="orderHeader.productStoreId &amp;&amp; isPromo != 'Y' &amp;&amp; !(itemTypeEnumId in ['ItemShipping', 'ItemSalesTax', 'ItemVatTax'])">
                     <service-call name="mantle.order.OrderServices.handle#OrderMajorChange"
@@ -977,6 +1030,9 @@ General Order Placement and eCommerce Usage
             <parameter name="shipmentMethodEnumId"/>
             <parameter name="postalContactMechId"/>
             <parameter name="customerPartyId"/>
+            <parameter name="disablePromotions"/>
+            <parameter name="disableShippingCalc"/>
+            <parameter name="disableTaxCalc"/>
             <parameter name="partTotal" type="BigDecimal"/>
             <parameter name="originalValue" type="Map"/>
         </in-parameters>
@@ -987,7 +1043,8 @@ General Order Placement and eCommerce Usage
             <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader" for-update="true"/>
             <if condition="orderHeader.productStoreId &amp;&amp; (!originalValue || postalContactMechId != originalValue.postalContactMechId ||
                     carrierPartyId != originalValue.carrierPartyId || shipmentMethodEnumId != originalValue.shipmentMethodEnumId ||
-                    customerPartyId != originalValue.customerPartyId)"><then>
+                    customerPartyId != originalValue.customerPartyId || disablePromotions != originalValue.disablePromotions ||
+                    disableShippingCalc != originalValue.disableShippingCalc || disableTaxCalc != originalValue.disableTaxCalc)"><then>
                 <service-call name="mantle.order.OrderServices.handle#OrderMajorChange"
                         in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId]"/>
             </then><else>
@@ -1010,30 +1067,42 @@ General Order Placement and eCommerce Usage
                 <!-- set flag in context root to avoid recursive triggers -->
                 <script>ec.context.getSharedMap().put(sharedFlagKey, true)</script>
 
-                <!-- Clean out order before automatic changes so we don't have stale data -->
-                <entity-delete-by-condition entity-name="mantle.order.OrderItem">
-                    <econdition field-name="orderId"/><econdition field-name="orderPartSeqId"/>
-                    <econditions combine="or">
-                        <econdition field-name="itemTypeEnumId" operator="in" value="ItemShipping,ItemSalesTax,ItemVatTax"/>
-                        <econdition field-name="isPromo" value="Y"/>
-                    </econditions>
-                </entity-delete-by-condition>
+                <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart" for-update="true"/>
 
                 <!-- Apply Promotions -->
-                <service-call name="mantle.product.PromotionServices.apply#OrderPromotions"
-                        in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId, orderHeader:orderHeader]"/>
+                <if condition="!'Y'.equals(orderPart.disablePromotions)">
+                    <entity-delete-by-condition entity-name="mantle.order.OrderItem">
+                        <econdition field-name="orderId"/><econdition field-name="orderPartSeqId"/>
+                        <econdition field-name="isPromo" value="Y"/>
+                    </entity-delete-by-condition>
+                    <service-call name="mantle.product.PromotionServices.apply#OrderPromotions"
+                            in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId, orderHeader:orderHeader]"/>
+                </if>
+
                 <!-- Calculate Shipping, after promotions so that order total/etc is adjusted for them -->
-                <service-call name="mantle.shipment.CarrierServices.calculate#OrderPartShipping"
-                        in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId, createOrderItem:true]"/>
+                <if condition="!'Y'.equals(orderPart.disableShippingCalc)">
+                    <entity-delete-by-condition entity-name="mantle.order.OrderItem">
+                        <econdition field-name="orderId"/><econdition field-name="orderPartSeqId"/>
+                        <econdition field-name="itemTypeEnumId" value="ItemShipping"/>
+                    </entity-delete-by-condition>
+                    <service-call name="mantle.shipment.CarrierServices.calculate#OrderPartShipping"
+                            in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId, createOrderItem:true]"/>
+                </if>
+
                 <!-- Calculate Tax, after Shipping as it might be taxed -->
-                <service-call name="mantle.other.TaxServices.calculate#OrderSalesTax"
-                        in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId]"/>
+                <if condition="!'Y'.equals(orderPart.disableTaxCalc)">
+                    <entity-delete-by-condition entity-name="mantle.order.OrderItem">
+                        <econdition field-name="orderId"/><econdition field-name="orderPartSeqId"/>
+                        <econdition field-name="itemTypeEnumId" operator="in" value="ItemSalesTax,ItemVatTax"/>
+                    </entity-delete-by-condition>
+                    <service-call name="mantle.other.TaxServices.calculate#OrderSalesTax"
+                            in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId]"/>
+                </if>
 
                 <script>ec.context.getSharedMap().remove(sharedFlagKey)</script>
 
                 <service-call name="mantle.order.OrderServices.increment#OrderRevision" in-map="context"/>
             </if>
-
         </actions>
     </service>
 
@@ -1042,10 +1111,9 @@ General Order Placement and eCommerce Usage
             which is called by EECA on OrderItem</description>
         <in-parameters>
             <parameter name="orderId"/>
-            <parameter name="orderHeader" type="EntityValue"/>
         </in-parameters>
         <actions>
-            <if condition="orderHeader == null"><entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader" for-update="true"/></if>
+            <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader" for-update="true"/>
             <set field="totalSum" from="0.0" type="BigDecimal"/>
             <entity-find entity-name="mantle.order.OrderPart" list="orderPartList"><econdition field-name="orderId"/></entity-find>
             <iterate list="orderPartList" entry="orderPart">
@@ -1060,7 +1128,6 @@ General Order Placement and eCommerce Usage
             <parameter name="orderId" required="true"/>
             <parameter name="orderPartSeqId" required="true"/>
             <parameter name="originalValue" type="Map"/>
-            <parameter name="orderHeader" type="EntityValue"/>
         </in-parameters>
         <actions>
             <set field="totalSum" from="0.0" type="BigDecimal"/>
@@ -1072,7 +1139,7 @@ General Order Placement and eCommerce Usage
                 <set field="totalSum" from="totalSum + itemTotalOut.itemTotal"/>
             </iterate>
 
-            <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart"/>
+            <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart" for-update="true"/>
             <set field="orderPart.partTotal" from="totalSum"/>
             <entity-update value-field="orderPart"/>
 
@@ -1088,7 +1155,7 @@ General Order Placement and eCommerce Usage
             </if>
 
             <!-- now update the OrderHeader.grandTotal -->
-            <service-call name="mantle.order.OrderServices.update#OrderHeaderTotal" in-map="[orderId:orderId, orderHeader:orderHeader]"/>
+            <service-call name="mantle.order.OrderServices.update#OrderHeaderTotal" in-map="[orderId:orderId]"/>
         </actions>
     </service>
     <service verb="increment" noun="OrderRevision">

@@ -46,8 +46,8 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="product" from="asset.'mantle.product.Product'"/>
             <set field="originFacility" from="asset.'Origin#mantle.facility.Facility'"/>
 
-            <entity-find entity-name="mantle.product.asset.AssetDetail" list="assetDetailList">
-                <econdition field-name="assetId"/><order-by field-name="effectiveDate"/></entity-find>
+            <entity-find entity-name="mantle.product.asset.AssetDetail" list="assetDetailList" limit="20">
+                <econdition field-name="assetId"/><order-by field-name="-effectiveDate"/></entity-find>
             <entity-find entity-name="mantle.product.issuance.AssetReservation" list="assetReservationList">
                 <econdition field-name="assetId"/><order-by field-name="reservedDate"/></entity-find>
         </actions>
@@ -287,12 +287,10 @@ along with this software (see the LICENSE.md file). If not, see
                 <set field="singleLot" from="false"/>
                 <set field="newerInventory" from="false"/>
                 <if condition="orderPart.customerPartyId">
-                    <entity-find entity-name="mantle.party.PartySetting" list="custSettingList" cache="true">
-                        <econdition field-name="partyId" from="orderPart.customerPartyId"/>
-                        <econdition field-name="partySettingTypeId" value="CustomerSetting"/>
-                    </entity-find>
-                    <set field="singleLot" from="custSettingList.find({ 'CsstSingleLot'.equals(it.settingValue) }) != null"/>
-                    <set field="newerInventory" from="custSettingList.find({ 'CsstNewerInventory'.equals(it.settingValue) }) != null"/>
+                    <set field="singleLot" from="'BlY'.equals(ec.service.sync().name('mantle.party.PartyServices.get#PartySettingValue')
+                        .parameter('partySettingTypeId', 'CustomerSingleLot').parameter('partyId', orderPart.customerPartyId).call()?.get('settingValue'))"/>
+                    <set field="newerInventory" from="'BlY'.equals(ec.service.sync().name('mantle.party.PartyServices.get#PartySettingValue')
+                        .parameter('partySettingTypeId', 'CustomerNewerInventory').parameter('partyId', orderPart.customerPartyId).call()?.get('settingValue'))"/>
                 </if>
 
                 <if condition="singleLot || newerInventory">
@@ -716,6 +714,7 @@ along with this software (see the LICENSE.md file). If not, see
         <in-parameters>
             <parameter name="assetReservation" type="EntityValue" required="true"/>
             <parameter name="shipmentId" required="true"/>
+            <parameter name="shipmentItemSourceId"/>
             <parameter name="quantity" type="BigDecimal" required="true"/>
             <parameter name="issuedDate" type="Timestamp" default="ec.user.nowTimestamp"/>
         </in-parameters>
@@ -726,8 +725,8 @@ along with this software (see the LICENSE.md file). If not, see
             <service-call name="create#mantle.product.issuance.AssetIssuance" out-map="context"
                     in-map="[assetId:assetReservation.assetId, assetReservationId:assetReservation.assetReservationId,
                         orderId:assetReservation.orderId, orderItemSeqId:assetReservation.orderItemSeqId,
-                        shipmentId:shipmentId, productId:assetReservation.productId, issuedDate:issuedDate,
-                        issuedByUserId:ec.user.userId, quantity:quantity]"/>
+                        shipmentId:shipmentId, shipmentItemSourceId:shipmentItemSourceId, productId:assetReservation.productId,
+                        issuedDate:issuedDate, issuedByUserId:ec.user.userId, quantity:quantity]"/>
 
             <!-- create AssetDetail to decrement quantityOnHand -->
             <!-- NOTE: no availableToPromiseDiff because that was modified during the reservation -->
@@ -749,6 +748,7 @@ along with this software (see the LICENSE.md file). If not, see
         <in-parameters>
             <parameter name="assetId"><description>Optional assetId, issues against this first if specified.</description></parameter>
             <parameter name="shipmentId" required="true"/>
+            <parameter name="shipmentItemSourceId"/>
             <parameter name="orderId" required="true"/>
             <parameter name="orderItemSeqId" required="true"/>
             <parameter name="quantity" type="BigDecimal" required="true"/>
@@ -760,7 +760,8 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="productStore" from="orderHeader.'mantle.product.store.ProductStore'"/>
             <!-- <set field="inventoryFacility" from="productStore.'Inventory#mantle.facility.Facility'"/> -->
             <set field="productId" from="orderItem.productId"/>
-            <set field="baseMap" from="[orderId:orderId, orderItemSeqId:orderItemSeqId, shipmentId:shipmentId, productId:productId]"/>
+            <set field="baseMap" from="[orderId:orderId, orderItemSeqId:orderItemSeqId, shipmentId:shipmentId,
+                    shipmentItemSourceId:shipmentItemSourceId, productId:productId]"/>
 
             <set field="facilityId" from="productStore?.inventoryFacilityId"/>
             <!-- no ProductStore inventoryFacilityId? look at OrderPart -->
@@ -985,6 +986,44 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
 
+    <service verb="cancel" noun="AssetIssuance">
+        <in-parameters>
+            <parameter name="assetIssuanceId" required="true"/>
+            <parameter name="reserveAsset" type="Boolean" default="true"/>
+            <parameter name="cancelDate" type="Timestamp" default="ec.user.nowTimestamp"/>
+        </in-parameters>
+        <out-parameters><parameter name="assetReservationId"/></out-parameters>
+        <actions>
+            <entity-find-one entity-name="mantle.product.issuance.AssetIssuance" value-field="assetIssuance" for-update="true"/>
+            <set field="originalQuantity" from="assetIssuance.quantity"/>
+            <if condition="!originalQuantity"><return message="No quantity to cancel for issuance ${assetIssuanceId} of asset ${assetIssuance.assetId}"/></if>
+            <if condition="assetIssuance.invoiceId">
+                <return error="true" message="Cannot unpack issuance ${assetIssuanceId}, already on invoice ${assetIssuance.invoiceId}"/></if>
+
+            <set field="quantityCancelled" from="(assetIssuance.quantityCancelled ?: 0.0) + originalQuantity"/>
+            <service-call name="update#mantle.product.issuance.AssetIssuance" in-map="[assetIssuanceId:assetIssuanceId,
+                    quantity:0.0, quantityCancelled:quantityCancelled]"/>
+
+            <if condition="reserveAsset &amp;&amp; assetIssuance.orderId"><then>
+                <!-- create AssetDetail to increment QOH only, keep ATP -->
+                <!-- NOTE: no availableToPromiseDiff because we are going to reserve again right now -->
+                <service-call name="create#mantle.product.asset.AssetDetail" in-map="[assetId:assetIssuance.assetId,
+                    effectiveDate:cancelDate, quantityOnHandDiff:originalQuantity,
+                    productId:assetIssuance.productId, assetIssuanceId:assetIssuanceId]"/>
+                <service-call name="create#mantle.product.issuance.AssetReservation" out-map="context" in-map="[
+                    orderId:assetIssuance.orderId, orderItemSeqId:assetIssuance.orderItemSeqId, productId:assetIssuance.productId,
+                    assetId:assetIssuance.assetId, reservedDate:cancelDate, quantity:originalQuantity,
+                    quantityNotAvailable:0, quantityNotIssued:originalQuantity, priority:null,
+                    sequenceNum:1, reservationOrderEnumId:null]"/>
+            </then><else>
+                <!-- create AssetDetail to increment QOH and ATP -->
+                <service-call name="create#mantle.product.asset.AssetDetail" in-map="[assetId:assetIssuance.assetId,
+                    effectiveDate:cancelDate, quantityOnHandDiff:originalQuantity, availableToPromiseDiff:originalQuantity,
+                    productId:assetIssuance.productId, assetIssuanceId:assetIssuanceId]"/>
+            </else></if>
+        </actions>
+    </service>
+
     <!-- ====================================== -->
     <!-- ========== Receipt Services ========== -->
     <!-- ====================================== -->
@@ -1111,7 +1150,7 @@ along with this software (see the LICENSE.md file). If not, see
                         in-map="context + [quantityOnHandTotal:0, availableToPromiseTotal:0,
                             acquiredDate:(orderHeader?.placedDate ?: ec.user.nowTimestamp),
                             acquireOrderId:orderId, acquireOrderItemSeqId:orderItemSeqId,
-                            acquireShipmentId:shipmentId, acquireCost:orderItem?.unitAmount,
+                            acquireShipmentId:shipmentId, acquireCost:(acquireCost ?: orderItem?.unitAmount),
                             acquireCostUomId:orderHeader?.currencyUomId, acquireWorkEffortId:workEffortId]"/>
             </then><else>
                 <entity-find-one entity-name="mantle.product.asset.Asset" value-field="asset"/>

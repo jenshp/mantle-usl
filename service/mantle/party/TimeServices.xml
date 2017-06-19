@@ -132,12 +132,35 @@ along with this software (see the LICENSE.md file). If not, see
             </then><else>
                 <if condition="!partyId"><message error="true">With no previousPeriodId must specify partyId</message></if>
                 <if condition="!timePeriodTypeId"><message error="true">With no previousPeriodId must specify timePeriodTypeId</message></if>
-                <if condition="!fromDate"><message error="true">With no previousPeriodId must specify fromDate</message></if>
+                <if condition="!fromDate &amp;&amp; !thruDate"><message error="true">With no previousPeriodId must specify fromDate or thruDate</message></if>
                 <check-errors/>
             </else></if>
-            <set field="fromDate" from="new java.sql.Date(fromDate.time)"/>
 
             <entity-find-one entity-name="mantle.party.time.TimePeriodType" value-field="timePeriodType" cache="true"/>
+
+            <!-- if no fromDate calc from thruDate and timePeriodType -->
+            <if condition="fromDate == null"><then><script><![CDATA[
+                java.time.temporal.TemporalUnit field = getTemporalUnitFromUomId(timePeriodType.lengthUomId)
+                // use the database time zone, for Date fields this avoid moving across day boundaries
+                def fromDateDt = java.time.ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(thruDate.time), ec.entity.databaseTimeZone.toZoneId())
+
+                BigDecimal periodLength = timePeriodType.periodLength
+                if (periodLength < 1 && timePeriodType.lengthUomId == 'TF_mon') {
+                    // special case for Semi-Month
+                    int maxDays = fromDateDt.range(java.time.temporal.ChronoField.DAY_OF_MONTH).getMaximum()
+                    int days = (maxDays * periodLength).setScale(0, BigDecimal.ROUND_DOWN).intValue()
+                    if (fromDateDt.dayOfMonth < days) fromDateDt = fromDateDt.minusDays(days)
+                    else fromDateDt = fromDateDt.minusDays(maxDays - days)
+                } else {
+                    fromDateDt = fromDateDt.minus(periodLength.longValue(), field)
+                }
+                // step forward by one day so fromDate is the first day of this period, not the last day of the previous
+                fromDateDt = fromDateDt.plusDays(1)
+                fromDate = java.sql.Date.from(fromDateDt.toInstant())
+            ]]></script>
+            </then><else>
+                <set field="fromDate" from="new java.sql.Date(fromDate.time)"/>
+            </else></if>
 
             <!-- see if there is already a TimePeriod for the partyId, timePeriodTypeId, and fromDate -->
             <entity-find entity-name="mantle.party.time.TimePeriod" list="existingPeriodList">
@@ -173,8 +196,9 @@ along with this software (see the LICENSE.md file). If not, see
 
             <!-- Set a default period name -->
             <if condition="!periodName">
-                <entity-find-one entity-name="mantle.party.Organization" value-field="partyOrganization"/>
-                <set field="periodName" value="${partyOrganization.organizationName} ${timePeriodType.description} ${ec.l10n.format(fromDate, 'yyyy-MM-dd')}"/>
+                <entity-find-one entity-name="mantle.party.PartyDetail" value-field="partyDetail"/>
+                <set field="partyName" from="((String) partyDetail.pseudoId).charAt(0).isDigit() ? partyDetail.organizationName : partyDetail.pseudoId"/>
+                <set field="periodName" value="${partyDetail.pseudoId} ${timePeriodType.description} ${ec.l10n.format(fromDate, 'yyyy-MM-dd')}"/>
             </if>
             <!-- Set a default period num -->
             <if condition="!periodNum">
@@ -229,7 +253,8 @@ along with this software (see the LICENSE.md file). If not, see
             <auto-parameters entity-name="mantle.party.time.TimePeriod" include="nonpk"/>
             <parameter name="partyId" required="true"/>
             <parameter name="timePeriodTypeId" required="true"/>
-            <parameter name="fromDate" type="Date" required="true"/>
+            <parameter name="fromDate" type="Date"/>
+            <parameter name="thruDate" type="Date"/>
             <parameter name="isClosed" default-value="N"/>
         </in-parameters>
         <out-parameters>
@@ -237,9 +262,15 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="timePeriod" type="EntityValue"/>
         </out-parameters>
         <actions>
+            <!-- Make sure either fromDate or thruDate was provided -->
+            <if condition="!fromDate &amp;&amp; !thruDate"><return error="true" message="Must specify fromDate or thruDate"/></if>
+
             <entity-find entity-name="mantle.party.time.TimePeriod" list="existingPeriodList">
                 <econdition field-name="partyId"/><econdition field-name="timePeriodTypeId"/>
-                <econdition field-name="fromDate"/>
+                <econditions combine="or">
+                    <econdition field-name="fromDate" ignore-if-empty="true"/>
+                    <econdition field-name="thruDate" ignore-if-empty="true"/>
+                </econditions>
             </entity-find>
             <if condition="existingPeriodList"><then>
                 <set field="timePeriod" from="existingPeriodList.get(0)"/>
@@ -282,6 +313,46 @@ along with this software (see the LICENSE.md file). If not, see
                 <econdition field-name="previousPeriodId" from="timePeriodId"/></entity-find>
             <set field="nextTimePeriod" from="nextTimePeriodList ? nextTimePeriodList[0] : null"/>
             <set field="nextTimePeriodId" from="nextTimePeriod?.timePeriodId"/>
+        </actions>
+    </service>
+    
+    <service verb="find" noun="PartyTimePeriodGroups">
+        <description>Find periods of the given type for the given party in groups going back 'groups' time periods, each group going
+            back 'perGroup' periods. Default settings go back 12 fiscal months from now. To go back 12 fiscal months with the
+            previous 12 months included for each month set perGroup to 12 (for trailing month averages, etc).</description>
+        <in-parameters>
+            <parameter name="partyId" required="true"/>
+            <parameter name="timePeriodTypeId" default-value="FiscalMonth"/>
+            <parameter name="groups" type="Integer" default="12"/>
+            <parameter name="perGroup" type="Integer" default="1"/>
+            <parameter name="thruDate" type="Date" default="new java.sql.Date(System.currentTimeMillis())"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="timePeriodGroups" type="List" required="true"><parameter name="timePeriodIds" type="List">
+                <parameter name="timePeriodId"/></parameter></parameter>
+        </out-parameters>
+        <actions>
+            <entity-find entity-name="mantle.party.time.TimePeriod" list="mainPeriods" limit="groups">
+                <econdition field-name="partyId"/><econdition field-name="timePeriodTypeId"/>
+                <econdition field-name="fromDate" operator="less-equals" from="thruDate"/>
+                <order-by field-name="-fromDate"/><!-- get most recent X (groups) periods -->
+            </entity-find>
+            <!-- now that we have most recent, order ascending by fromDate -->
+            <order-map-list list="mainPeriods"><order-by field-name="fromDate"/></order-map-list>
+            <set field="timePeriodGroups" from="[]"/>
+            <iterate list="mainPeriods" entry="mainPeriod">
+                <if condition="perGroup &lt;= 1"><then>
+                    <script>timePeriodGroups.add([mainPeriod.timePeriodId])</script>
+                </then><else>
+                    <entity-find entity-name="mantle.party.time.TimePeriod" list="groupPeriods" limit="perGroup">
+                        <econdition field-name="partyId"/><econdition field-name="timePeriodTypeId"/>
+                        <econdition field-name="fromDate" operator="less-equals" from="mainPeriod.fromDate"/>
+                        <order-by field-name="-fromDate"/>
+                    </entity-find>
+                    <order-map-list list="groupPeriods"><order-by field-name="fromDate"/></order-map-list>
+                    <script>timePeriodGroups.add(groupPeriods*.timePeriodId)</script>
+                </else></if>
+            </iterate>
         </actions>
     </service>
 </services>

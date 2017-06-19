@@ -22,26 +22,26 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="acctgTransId"/></out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.product.receipt.AssetReceipt" value-field="assetReceipt" for-update="true"/>
-            <if condition="!assetReceipt"><return error="true" message="Not posting Inventory transaction, could not find Asset Receipt with ID [${assetReceiptId}]"/></if>
+            <if condition="!assetReceipt"><return error="true" message="Not posting Inventory transaction, could not find Asset Receipt with ID ${assetReceiptId}"/></if>
             <set field="asset" from="assetReceipt.'mantle.product.asset.Asset'"/>
             <set field="organizationPartyId" from="asset.ownerPartyId"/>
-
-            <if condition="asset.acquireCost == null">
-                <log level="trace" message="Not posting Asset Receipt [${assetReceiptId}], Asset has no acquireCost"/>
-                <set field="assetReceipt.acctgTransResultEnumId" value="AtrNoAcquireCost"/>
-                <entity-update value-field="assetReceipt"/>
-                <return/>
-            </if>
 
             <service-call name="mantle.ledger.LedgerServices.find#PartyAcctgPreference" out-map="papOut"
                     in-map="[organizationPartyId:organizationPartyId]"/>
             <set field="partyAcctgPreference" from="papOut.partyAcctgPreference"/>
             <!-- if no preference we shouldn't post anything -->
             <if condition="!partyAcctgPreference">
-                <log level="trace" message="Not posting Asset Receipt [${assetReceiptId}], could not find PartyAcctgPreference for Owner Party [${organizationPartyId}]"/>
+                <log level="trace" message="Not posting Asset Receipt ${assetReceiptId}, could not find PartyAcctgPreference for Owner Party ${organizationPartyId}"/>
                 <set field="assetReceipt.acctgTransResultEnumId" value="AtrNoAcctgPreference"/>
                 <entity-update value-field="assetReceipt"/>
                 <return/>
+            </if>
+
+            <if condition="asset.acquireCost == null">
+                <log level="warn" message="Not posting Asset Receipt ${assetReceiptId}, Asset has no acquireCost"/>
+                <set field="assetReceipt.acctgTransResultEnumId" value="AtrNoAcquireCost"/>
+                <entity-update value-field="assetReceipt"/>
+                <return message="Not posting Asset Receipt ${assetReceiptId}, Asset has no acquireCost"/>
             </if>
 
             <!-- get assetTypeGlAccount -->
@@ -118,7 +118,7 @@ along with this software (see the LICENSE.md file). If not, see
             <service-call name="mantle.ledger.LedgerServices.create#AcctgTrans" out-map="context"
                     in-map="[acctgTransTypeEnumId:acctgTransTypeEnumId, organizationPartyId:organizationPartyId,
                         otherPartyId:otherPartyId, amountUomId:asset.acquireCostUomId, assetReceiptId:assetReceiptId,
-                        assetId:asset.assetId]"/>
+                        assetId:asset.assetId, shipmentId:assetReceipt.shipmentId]"/>
             <!-- note: could populate invoiceId, etc... but should we? for now no -->
 
             <!-- Credit to GatUnreceivedInventory or GatUnreceivedFixedAsset (look for assetTypeEnumId=AstTpFixed or parentEnumId=AstTpFixed) -->
@@ -157,22 +157,22 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="asset" from="assetIssuance.'mantle.product.asset.Asset'"/>
             <set field="organizationPartyId" from="asset.ownerPartyId"/>
 
-            <if condition="asset.acquireCost == null">
-                <log level="trace" message="Not posting Asset Issuance [${assetIssuanceId}], Asset has no acquireCost"/>
-                <set field="assetIssuance.acctgTransResultEnumId" value="AtrNoAcquireCost"/>
-                <entity-update value-field="assetIssuance"/>
-                <return/>
-            </if>
-
             <service-call name="mantle.ledger.LedgerServices.find#PartyAcctgPreference" out-map="papOut"
                     in-map="[organizationPartyId:organizationPartyId]"/>
             <set field="partyAcctgPreference" from="papOut.partyAcctgPreference"/>
             <!-- if no preference we shouldn't post anything -->
             <if condition="!partyAcctgPreference">
-                <log level="trace" message="Not posting Asset Issuance [${assetIssuanceId}], could not find PartyAcctgPreference for Owner Party [${organizationPartyId}]"/>
+                <log level="trace" message="Not posting Asset Issuance ${assetIssuanceId}, could not find PartyAcctgPreference for Owner Party ${organizationPartyId}"/>
                 <set field="assetIssuance.acctgTransResultEnumId" value="AtrNoAcctgPreference"/>
                 <entity-update value-field="assetIssuance"/>
                 <return/>
+            </if>
+            <!-- check acquireCost -->
+            <if condition="asset.acquireCost == null">
+                <log level="warn" message="Not posting Asset Issuance ${assetIssuanceId}, Asset has no acquireCost"/>
+                <set field="assetIssuance.acctgTransResultEnumId" value="AtrNoAcquireCost"/>
+                <entity-update value-field="assetIssuance"/>
+                <return message="Not posting Asset Issuance ${assetIssuanceId}, Asset has no acquireCost"/>
             </if>
 
             <!-- get assetTypeGlAccount -->
@@ -245,9 +245,9 @@ along with this software (see the LICENSE.md file). If not, see
 
             <!-- create the AcctgTrans -->
             <service-call name="mantle.ledger.LedgerServices.create#AcctgTrans" out-map="context"
-                    in-map="[acctgTransTypeEnumId:'AttInventoryIssuance', organizationPartyId:organizationPartyId,
+                    in-map="[acctgTransTypeEnumId:acctgTransTypeEnumId, organizationPartyId:organizationPartyId,
                         otherPartyId:null, amountUomId:asset.acquireCostUomId, assetIssuanceId:assetIssuanceId,
-                        assetId:asset.assetId]"/>
+                        assetId:asset.assetId, shipmentId:assetIssuance.shipmentId]"/>
             <!-- note: could populate invoiceId, etc... but should we? for now no -->
 
             <set field="useErrorJournal" from="false"/>
@@ -281,24 +281,27 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="revert" noun="AssetIssuanceOnCancel">
         <in-parameters>
             <parameter name="assetIssuanceId" required="true"/>
-            <parameter name="cancelledQuantity" type="BigDecimal" required="true"/>
+            <!-- for now only support full cancel: <parameter name="cancelledQuantity" type="BigDecimal" required="true"/> -->
         </in-parameters>
         <out-parameters><parameter name="acctgTransId"/></out-parameters>
         <actions>
             <!-- there should just be one AcctgTrans for this invoice, if there is more than one may already be cancelled -->
             <entity-find entity-name="mantle.ledger.transaction.AcctgTrans" list="acctgTransList">
                 <econdition field-name="assetIssuanceId"/>
-                <econdition field-name="acctgTransTypeEnumId" value="AttInventoryIssuance"/>
+                <econdition field-name="reversedByAcctgTransId" from="null"/>
+                <econdition field-name="reverseOfAcctgTransId" from="null"/>
+                <econdition field-name="acctgTransTypeEnumId" operator="in" value="AttAssetIssuance,AttInventoryIssuance"/>
             </entity-find>
-            <if condition="acctgTransList">
-                <if condition="acctgTransList.size() == 1">
+            <if condition="acctgTransList"><then>
+                <if condition="acctgTransList.size() == 1"><then>
                     <service-call name="mantle.ledger.LedgerServices.post#ReverseAcctgTrans"
                             in-map="[acctgTransId:acctgTransList.first.acctgTransId, deleteIfNotPosted:true]"/>
-
-                    <else><return error="true" message="Found more than one accounting transaction for Asset Issuance ${assetIssuanceId}, may already be reversed, not posting reverse transaction."/></else>
-                </if>
-                <else><return error="true" message="No accounting transaction found for Asset Issuance ${assetIssuanceId}, not posting reverse transaction."/></else>
-            </if>
+                </then><else>
+                    <return error="true" message="Found more than one accounting transaction for Asset Issuance ${assetIssuanceId}, may already be reversed, not posting reverse transaction."/>
+                </else></if>
+            </then><else>
+                <return message="No accounting transaction found for Asset Issuance ${assetIssuanceId}, not posting reverse transaction."/>
+            </else></if>
         </actions>
     </service>
 

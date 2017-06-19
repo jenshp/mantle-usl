@@ -14,13 +14,17 @@ along with this software (see the LICENSE.md file). If not, see
 -->
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.1.xsd">
 
+    <!-- =========================================== -->
+    <!-- ========== Invoice View Services ========== -->
+    <!-- =========================================== -->
+
     <service verb="get" noun="InvoiceDisplayInfo">
         <in-parameters><parameter name="invoiceId" required="true"/></in-parameters>
         <out-parameters>
             <parameter name="invoice" type="Map"/>
-            <parameter name="editableStatusIds" type="Set"/>
+            <parameter name="editableStatusIds" type="Set"><parameter name="statusId"/></parameter>
             <parameter name="invoiceEditable" type="Boolean"/>
-            <parameter name="recordPaymentStatusIds" type="Set"/>
+            <parameter name="recordPaymentStatusIds" type="Set"><parameter name="statusId"/></parameter>
             <parameter name="canRecordPayments" type="Boolean"/>
 
             <parameter name="isFromPartyOrgInternal" type="Boolean"><description>If true invoice is receivable</description></parameter>
@@ -32,6 +36,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="appliedPaymentsTotal" type="BigDecimal"/>
             <parameter name="unpaidTotal" type="BigDecimal"/>
             <parameter name="paymentApplicationList" type="List"><parameter name="paymentApplication" type="Map"/></parameter>
+            <parameter name="unappliedPaymentInfoList" type="List"><parameter name="unappliedPaymentInfo" type="Map"/></parameter>
             <parameter name="statusHistoryList" type="List"><parameter name="auditLog" type="Map"/></parameter>
 
             <parameter name="orderItemBillingList" type="List"><parameter name="orderItemBilling" type="Map"/></parameter>
@@ -47,10 +52,13 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice"/>
             <if condition="invoice == null"><return error="true" message="Invoice not found with ID ${invoiceId}"/></if>
 
+            <!-- calc invoice totals -->
+            <service-call name="mantle.account.InvoiceServices.get#InvoiceTotal" in-map="[invoiceId:invoiceId]" out-map="context"/>
+
             <set field="editableStatusIds" from="new HashSet(['InvoiceInProcess', 'InvoiceIncoming', 'InvoiceReceived'])"/>
             <set field="invoiceEditable" from="editableStatusIds.contains(invoice.statusId)"/>
             <set field="recordPaymentStatusIds" from="new HashSet(['InvoiceInProcess', 'InvoiceFinalized', 'InvoiceSent', 'InvoiceWriteOff', 'InvoiceReceived', 'InvoiceApproved'])"/>
-            <set field="canRecordPayments" from="recordPaymentStatusIds.contains(invoice.statusId)"/>
+            <set field="canRecordPayments" from="recordPaymentStatusIds.contains(invoice.statusId) &amp;&amp; unpaidTotal > 0.0"/>
 
             <!-- see if from/to parties are internal orgs -->
             <entity-find-count entity-name="mantle.party.PartyRole" count-field="fromOrgInternalCount">
@@ -78,13 +86,27 @@ along with this software (see the LICENSE.md file). If not, see
                 </entity-find>
             </if>
 
-            <!-- calc invoice totals -->
-            <service-call name="mantle.account.InvoiceServices.get#InvoiceTotal" in-map="[invoiceId:invoiceId]" out-map="context"/>
-
             <!-- get payment applications -->
             <entity-find entity-name="mantle.account.payment.PaymentApplication" list="paymentApplicationList">
                 <econdition field-name="invoiceId"/><order-by field-name="appliedDate"/></entity-find>
+            <!-- get payments with reverse from/to parties that might be applied to this invoice -->
+            <entity-find entity-name="mantle.account.payment.Payment" list="unappliedPaymentList">
+                <econdition field-name="fromPartyId" from="invoice.toPartyId"/>
+                <econdition field-name="toPartyId" from="invoice.fromPartyId"/>
+                <econdition field-name="paymentTypeEnumId" operator="in" value="PtInvoicePayment,PtPrePayment"/>
+                <econdition field-name="statusId" operator="in" value="PmntPromised,PmntAuthorized,PmntDelivered,PmntConfirmed"/>
+                <econdition field-name="unappliedTotal" operator="greater" from="0.0"/>
+            </entity-find>
+            <set field="unappliedPaymentInfoList" from="[]"/>
+            <iterate list="unappliedPaymentList" entry="unappliedPayment">
+                <service-call name="mantle.account.PaymentServices.get#PaymentTotals" in-map="[paymentId:unappliedPayment.paymentId]" out-map="pmtTotal"/>
+                <set field="maxApplicableAmount" from="unpaidTotal"/>
+                <if condition="maxApplicableAmount > pmtTotal.unappliedTotal"><set field="maxApplicableAmount" from="pmtTotal.unappliedTotal"/></if>
+                <script>unappliedPaymentInfoList.add(pmtTotal + [payment:unappliedPayment, maxApplicableAmount:maxApplicableAmount,
+                        allowApply:(maxApplicableAmount &amp;&amp; unappliedPayment.statusId in ['PmntDelivered','PmntConfirmed'])])</script>
+            </iterate>
 
+            <!-- get status history -->
             <entity-find entity-name="moqui.entity.EntityAuditLog" list="statusHistoryList">
                 <econdition field-name="changedEntityName" value="mantle.account.invoice.Invoice"/>
                 <econdition field-name="changedFieldName" value="statusId"/>
@@ -96,9 +118,7 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find entity-name="mantle.order.OrderItemBilling" list="orderItemBillingList">
                 <econdition field-name="invoiceId"/><order-by field-name="invoiceItemSeqId"/></entity-find>
             <!-- extract related order IDs -->
-            <set field="orderIdSet" from="new TreeSet()"/>
-            <iterate list="orderItemBillingList" entry="orderItemBilling">
-                <script>orderIdSet.add(orderItemBilling.orderId)</script></iterate>
+            <set field="orderIdSet" from="new TreeSet(orderItemBillingList*.orderId)"/>
             <!-- get promised payments for associated orders -->
             <if condition="orderIdSet">
                 <entity-find entity-name="mantle.account.payment.Payment" list="orderPromisedPaymentList">
@@ -110,16 +130,12 @@ along with this software (see the LICENSE.md file). If not, see
             <!-- get associated shipment items -->
             <entity-find entity-name="mantle.shipment.ShipmentItemSource" list="shipmentItemSourceList">
                 <econdition field-name="invoiceId"/></entity-find>
-            <set field="shipmentIdSet" from="new TreeSet()"/>
-            <iterate list="shipmentItemSourceList" entry="shipmentItemSource">
-                <script>shipmentIdSet.add(shipmentItemSource.shipmentId)</script></iterate>
+            <set field="shipmentIdSet" from="new TreeSet(shipmentItemSourceList*.shipmentId)"/>
 
             <!-- get associated accounting transactions -->
             <entity-find entity-name="mantle.ledger.transaction.AcctgTrans" list="acctgTransList">
                 <econdition field-name="invoiceId"/></entity-find>
-            <set field="acctgTransIdSet" from="new TreeSet()"/>
-            <iterate list="acctgTransList" entry="acctgTrans">
-                <script>acctgTransIdSet.add(acctgTrans.acctgTransId)</script></iterate>
+            <set field="acctgTransIdSet" from="new TreeSet(acctgTransList*.acctgTransId)"/>
         </actions>
     </service>
 
@@ -137,7 +153,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <econdition field-name="invoiceId"/></entity-find>
             <set field="invoiceTotal" from="0.0"/>
             <iterate list="invoiceItemList" entry="invoiceItem">
-                <set field="invoiceTotal" from="invoiceTotal + ((invoiceItem.quantity ?: 1.0) * (invoiceItem.amount ?: 0.0))"/></iterate>
+                <set field="invoiceTotal" from="invoiceTotal + ((invoiceItem.quantity != null ? invoiceItem.quantity : 1.0) * (invoiceItem.amount ?: 0.0))"/></iterate>
             <!-- round total to 2 decimal places -->
             <set field="invoiceTotal" from="(invoiceTotal as BigDecimal).setScale(2, BigDecimal.ROUND_HALF_UP)"/>
 
@@ -155,7 +171,7 @@ along with this software (see the LICENSE.md file). If not, see
             PaymentApplication records, called by EECA on InvoiceItem and PaymentApplication</description>
         <in-parameters><parameter name="invoiceId" required="true"/></in-parameters>
         <actions>
-            <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice" for-update="true"/>
+            <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice"/>
             <service-call name="mantle.account.InvoiceServices.get#InvoiceTotal" in-map="[invoiceId:invoiceId]" out-map="totalOut"/>
             <set field="invoice.invoiceTotal" from="totalOut.invoiceTotal"/>
             <set field="invoice.appliedPaymentsTotal" from="totalOut.appliedPaymentsTotal"/>
@@ -166,9 +182,10 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="calculate" noun="MissingInvoiceTotals" transaction-timeout="600">
         <description>This is a simple service not meant for very large Invoice tables and mainly for migration from older versions
             of mantle-usl before the invoiceTotal, appliedPaymentsTotal, and unpaidTotal fields were added.</description>
+        <in-parameters><parameter name="calculateAll" type="Boolean" default="false"/></in-parameters>
         <actions>
             <entity-find entity-name="mantle.account.invoice.Invoice" list="invoiceList">
-                <econdition field-name="invoiceTotal" operator="is-null"/></entity-find>
+                <econdition field-name="invoiceTotal" operator="is-null" ignore="calculateAll"/></entity-find>
             <iterate list="invoiceList" entry="invoice">
                 <service-call name="mantle.account.InvoiceServices.get#InvoiceTotal" in-map="[invoiceId:invoice.invoiceId]"
                         out-map="totalOut" out-map-add-to-existing="false"/>
@@ -177,20 +194,26 @@ along with this software (see the LICENSE.md file). If not, see
                 <set field="invoice.unpaidTotal" from="totalOut.unpaidTotal"/>
                 <entity-update value-field="invoice"/>
             </iterate>
+            <log level="warn" message="Calculated totals for ${invoiceList.size()} Invoices"/>
         </actions>
     </service>
 
     <service verb="get" noun="InvoicePrintInfo">
-        <in-parameters><parameter name="invoiceId"/></in-parameters>
+        <in-parameters><parameter name="invoiceId" required="true"/></in-parameters>
         <out-parameters>
             <parameter name="invoice" type="Map"/>
             <parameter name="currentStatus" type="Map"/>
             <parameter name="invoiceTotal" type="BigDecimal"/>
             <parameter name="appliedPaymentsTotal" type="BigDecimal"/>
             <parameter name="unpaidTotal" type="BigDecimal"/>
+            <parameter name="settlementTerm" type="Map"/>
+            <parameter name="orderIdSet" type="Set"><parameter name="orderId"/></parameter>
 
             <parameter name="invoiceItemList" type="List"><parameter name="invoiceItem" type="Map"/></parameter>
+            <parameter name="topItemList" type="List"><parameter name="invoiceItem" type="Map"/></parameter>
             <parameter name="itemTypeSummaryMapList" type="List"><parameter name="itemTypeSummary" type="Map"/></parameter>
+            <parameter name="hasProductItems" type="Boolean"/>
+            <parameter name="hasTimeEntryItems" type="Boolean"/>
 
             <parameter name="fromParty" type="Map"/>
             <parameter name="fromContactInfo" type="Map"><description>From the mantle.party.ContactServices.get#PartyContactInfo service.</description></parameter>
@@ -206,15 +229,25 @@ along with this software (see the LICENSE.md file). If not, see
             <service-call name="mantle.account.InvoiceServices.get#InvoiceTotal" in-map="[invoiceId:invoiceId]" out-map="context"/>
             <entity-find-related-one value-field="invoice" relationship-name="mantle.account.invoice.SettlementTerm" to-value-field="settlementTerm"/>
 
+            <entity-find entity-name="mantle.order.OrderItemBilling" list="orderItemBillingList">
+                <econdition field-name="invoiceId"/><order-by field-name="invoiceItemSeqId"/></entity-find>
+            <set field="orderIdSet" from="new TreeSet(orderItemBillingList*.orderId)"/>
+
             <entity-find entity-name="mantle.account.invoice.InvoiceItem" list="invoiceItemList">
-                <econdition field-name="invoiceId"/></entity-find>
+                <econdition field-name="invoiceId"/><order-by field-name="invoiceItemSeqId"/></entity-find>
+            <set field="topItemList" from="invoiceItemList.findAll({ it.parentItemSeqId == null })"/>
 
             <!-- build itemTypeSummaryMapMap with itemTypeEnumId, amount (only for ItemTimeEntry), quantity, total -->
+            <set field="hasProductItems" from="false"/>
+            <set field="hasTimeEntryItems" from="false"/>
             <set field="itemTypeSummaryMapMap" from="[:]"/>
             <iterate list="invoiceItemList" entry="invoiceItem">
                 <set field="mapKey" from="invoiceItem.itemTypeEnumId"/>
                 <if condition="invoiceItem.itemTypeEnumId == 'ItemTimeEntry'">
-                    <set field="mapKey" from="mapKey + '::' + invoiceItem.amount"/></if>
+                    <set field="mapKey" from="mapKey + '::' + invoiceItem.amount"/>
+                    <set field="hasTimeEntryItems" from="true"/>
+                </if>
+                <if condition="invoiceItem.productId"><set field="hasProductItems" from="true"/></if>
                 <set field="itemTypeSummaryMap" from="itemTypeSummaryMapMap.get(mapKey)"/>
                 <if condition="!itemTypeSummaryMap">
                     <set field="itemTypeSummaryMap" from="[itemTypeEnumId:invoiceItem.itemTypeEnumId, quantity:0, total:0]"/>
@@ -231,7 +264,8 @@ along with this software (see the LICENSE.md file). If not, see
                 <field-map field-name="partyId" from="invoice.fromPartyId"/></entity-find-one>
             <service-call name="mantle.party.ContactServices.get#PartyContactInfo" out-map="fromContactInfo"
                     in-map="[partyId:invoice.fromPartyId, postalContactMechPurposeId:'PostalPayment',
-                        telecomContactMechPurposeId:'PhonePayment', emailContactMechPurposeId:'EmailPayment']"/>
+                        telecomContactMechPurposeId:'PhonePayment', faxContactMechPurposeId:'PhonePaymentFax',
+                        emailContactMechPurposeId:'EmailPayment']"/>
             <service-call name="mantle.party.PartyServices.get#PartyContentLocation" out-map="logoImageOut"
                           in-map="[partyId:invoice.fromPartyId, partyContentTypeEnumIdList:['PcntLogoImage', 'PcntPrimaryImage']]"/>
             <set field="logoImageLocation" from="logoImageOut.contentLocation"/>
@@ -251,6 +285,143 @@ along with this software (see the LICENSE.md file). If not, see
                 <field-map field-name="partyId" from="toBillingRelList?.first?.fromPartyId"/></entity-find-one>
         </actions>
     </service>
+    <service verb="get" noun="ReceivableStatementInfo">
+        <in-parameters>
+            <parameter name="toPartyId" required="true"/>
+            <parameter name="fromPartyId"/>
+            <parameter name="periodDays" type="Integer" default="30"/>
+            <parameter name="asOfDate" type="Date"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="toParty" type="Map"/>
+            <parameter name="toContactInfo" type="Map"><description>From the mantle.party.ContactServices.get#PartyContactInfo service.</description></parameter>
+            <parameter name="toBillingRep" type="Map"/>
+            <parameter name="periodDays" type="Integer"/>
+            <parameter name="asOfTimestamp" type="Timestamp"/>
+            <parameter name="currencyUomId"/>
+            <parameter name="receivableInfoList" type="List"><parameter name="receivableInfo" type="Map">
+                <parameter name="fromPartyId"/>
+                <parameter name="fromParty" type="Map"/>
+                <parameter name="fromContactInfo" type="Map"><description>From the mantle.party.ContactServices.get#PartyContactInfo service.</description></parameter>
+                <parameter name="logoImageLocation"/>
+                <parameter name="invoiceList"><parameter name="invoice" type="Map"/></parameter>
+                <parameter name="invoiceTotal" type="BigDecimal"/>
+                <parameter name="unpaidTotal" type="BigDecimal"/>
+
+                <parameter name="unappliedPaymentList" type="List"><parameter name="payment" type="Map"/></parameter>
+                <parameter name="paymentTotal" type="BigDecimal"/>
+                <parameter name="unappliedTotal" type="BigDecimal"/>
+                <parameter name="balanceDue" type="BigDecimal"/>
+
+                <parameter name="agingSummaryList"><parameter name="agingSummary" type="Map"/></parameter>
+                <parameter name="receivableAgingList"><parameter name="unpaidAmount" type="BigDecimal"/></parameter>
+                <parameter name="receivableDueAgingList"><parameter name="unpaidAmount" type="BigDecimal"/></parameter>
+            </parameter></parameter>
+        </out-parameters>
+        <actions>
+            <set field="periodDaysBd" from="new BigDecimal(periodDays)"/>
+            <set field="asOfTimestamp" from="asOfDate ? ec.l10n.parseTimestamp(ec.l10n.format(asOfDate, 'yyyy-MM-dd') + ' 23:59:59.999', 'yyyy-MM-dd HH:mm:ss.SSS') : ec.user.nowTimestamp"/>
+
+            <entity-find-one entity-name="mantle.party.PartyDetail" value-field="toParty">
+                <field-map field-name="partyId" from="toPartyId"/></entity-find-one>
+            <service-call name="mantle.party.ContactServices.get#PartyContactInfo" out-map="toContactInfo"
+                    in-map="[partyId:toPartyId, postalContactMechPurposeId:'PostalBilling',
+                        telecomContactMechPurposeId:'PhoneBilling', emailContactMechPurposeId:'EmailBilling']"/>
+            <entity-find entity-name="mantle.party.PartyRelationship" list="toBillingRelList">
+                <date-filter/>
+                <econdition field-name="toPartyId" from="toPartyId"/>
+                <econdition field-name="relationshipTypeEnumId" value="PrtRepresentative"/>
+                <econdition field-name="fromRoleTypeId" value="ClientBilling"/>
+            </entity-find>
+            <entity-find-one entity-name="mantle.party.PartyDetail" value-field="toBillingRep">
+                <field-map field-name="partyId" from="toBillingRelList?.first?.fromPartyId"/></entity-find-one>
+
+            <!-- all Invoices -->
+            <entity-find entity-name="mantle.account.invoice.Invoice" list="allInvoiceList">
+                <econdition field-name="statusId" operator="in" value="InvoiceFinalized,InvoiceSent"/>
+                <econdition field-name="unpaidTotal" operator="not-equals" from="0.0"/>
+                <econdition field-name="toPartyId"/>
+                <econdition field-name="fromPartyId" ignore-if-empty="true"/>
+                <order-by field-name="invoiceDate"/>
+            </entity-find>
+            <!-- all Payments -->
+            <entity-find entity-name="mantle.account.payment.Payment" list="allUnappliedPaymentList">
+                <econdition field-name="fromPartyId" from="toPartyId"/>
+                <econdition field-name="toPartyId" from="fromPartyId" ignore-if-empty="true"/>
+                <econdition field-name="unappliedTotal" operator="not-equals" from="0.0"/>
+                <econdition field-name="statusId" operator="in" value="PmntDelivered,PmntConfirmed"/>
+            </entity-find>
+            <set field="fromPartyIds" from="new TreeSet(allInvoiceList*.fromPartyId + allUnappliedPaymentList*.toPartyId)"/>
+
+            <set field="receivableInfoList" from="[]"/>
+            <iterate list="fromPartyIds" entry="fromPartyId">
+                <set field="invoiceList" from="[]"/>
+                <set field="invoiceTotal" from="0.0"/>
+                <set field="unpaidTotal" from="0.0"/>
+                <set field="receivableAgingList" from="new ArrayList([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])"/>
+                <set field="receivableDueAgingList" from="new ArrayList([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])"/>
+                <iterate list="allInvoiceList" entry="invoice">
+                    <if condition="invoice.fromPartyId != fromPartyId"><continue/></if>
+                    <script><![CDATA[
+                        invoiceList.add(invoice)
+                        invoiceTotal += invoice.invoiceTotal
+                        unpaidTotal += invoice.unpaidTotal
+                        if (invoice.currencyUomId) currencyUomId = invoice.currencyUomId
+
+                        Integer invoiceDateDays = invoice.invoiceDate != null ? asOfTimestamp - invoice.invoiceDate : null
+                        Integer invoiceDateIdx = invoiceDateDays != null ? (invoiceDateDays < 0 ? 0 :
+                                ((invoiceDateDays as BigDecimal) / periodDaysBd).setScale(0, BigDecimal.ROUND_DOWN).intValue() + 1) : null
+                        if (invoiceDateIdx != null && invoiceDateIdx > 5) invoiceDateIdx = 5
+                        Integer dueDateDays = invoice.dueDate != null ? asOfTimestamp - invoice.dueDate : null
+                        Integer dueDateIdx = dueDateDays != null ? (dueDateDays < 0 ? 0 :
+                                ((dueDateDays as BigDecimal) / periodDaysBd).setScale(0, BigDecimal.ROUND_DOWN).intValue() + 1) : null
+                        if (dueDateIdx != null && dueDateIdx > 5) dueDateIdx = 5
+
+                        if (invoiceDateIdx != null) receivableAgingList[invoiceDateIdx] = receivableAgingList[invoiceDateIdx] + invoice.unpaidTotal
+                        if (dueDateIdx != null) receivableDueAgingList[dueDateIdx] = receivableDueAgingList[dueDateIdx] + invoice.unpaidTotal
+                    ]]></script>
+                </iterate>
+                <script>
+                    agingSummaryList = []
+                    agingSummaryList.add([description:'By Due Date', current:receivableDueAgingList[0], period0:receivableDueAgingList[1],
+                            period1:receivableDueAgingList[2], period2:receivableDueAgingList[3], period3:receivableDueAgingList[4],
+                            periodRemaining:receivableDueAgingList[5], total:receivableDueAgingList.sum()])
+                    agingSummaryList.add([description:'By Invoice Date', current:receivableAgingList[0], period0:receivableAgingList[1],
+                            period1:receivableAgingList[2], period2:receivableAgingList[3], period3:receivableAgingList[4],
+                            periodRemaining:receivableAgingList[5], total:receivableAgingList.sum()])
+                </script>
+
+                <set field="unappliedPaymentList" from="[]"/>
+                <set field="paymentTotal" from="0.0"/>
+                <set field="unappliedTotal" from="0.0"/>
+                <iterate list="allUnappliedPaymentList" entry="payment">
+                    <if condition="payment.toPartyId != fromPartyId"><continue/></if>
+                    <script>unappliedPaymentList.add(payment)</script>
+                    <set field="paymentTotal" from="paymentTotal + (payment.amount ?: 0.0)"/>
+                    <set field="unappliedTotal" from="unappliedTotal + payment.unappliedTotal"/>
+                </iterate>
+
+                <entity-find-one entity-name="mantle.party.PartyDetail" value-field="fromParty">
+                    <field-map field-name="partyId" from="fromPartyId"/></entity-find-one>
+                <service-call name="mantle.party.ContactServices.get#PartyContactInfo" out-map="fromContactInfo"
+                        in-map="[partyId:fromPartyId, postalContactMechPurposeId:'PostalPayment',
+                            telecomContactMechPurposeId:'PhonePayment', emailContactMechPurposeId:'EmailPayment']"/>
+                <service-call name="mantle.party.PartyServices.get#PartyContentLocation" out-map="logoImageOut"
+                        in-map="[partyId:fromPartyId, partyContentTypeEnumIdList:['PcntLogoImage', 'PcntPrimaryImage']]"/>
+                <set field="logoImageLocation" from="logoImageOut.contentLocation"/>
+                <script>receivableInfoList.add([fromPartyId:fromPartyId, fromParty:fromParty, fromContactInfo:fromContactInfo,
+                        logoImageLocation:logoImageOut.contentLocation, invoiceList:invoiceList,
+                        invoiceTotal:invoiceTotal, unpaidTotal:unpaidTotal, paymentTotal:paymentTotal, unappliedTotal:unappliedTotal,
+                        balanceDue:(unpaidTotal - unappliedTotal), unappliedPaymentList:unappliedPaymentList,
+                        agingSummaryList:agingSummaryList, receivableAgingList:receivableAgingList,
+                        receivableDueAgingList:receivableDueAgingList])</script>
+            </iterate>
+        </actions>
+    </service>
+
+    <!-- ==================================================== -->
+    <!-- ========== Invoice Create/Update Services ========== -->
+    <!-- ==================================================== -->
 
     <service verb="create" noun="Invoice">
         <description>Create an invoice manually (also used for an order part, shipment, project/work, etc). Initial
@@ -285,45 +456,6 @@ along with this software (see the LICENSE.md file). If not, see
             </if>
             <if condition="!currencyUomId"><set field="currencyUomId" value="USD"/></if>
 
-            <!-- get agreed on settlement term if none specified -->
-            <if condition="!settlementTermId">
-                <!-- find an AgreementTerm with a settlementTermId -->
-                <entity-find entity-name="mantle.party.agreement.AgreementAndTerm" list="agreementAndTermList">
-                    <date-filter/>
-                    <econdition field-name="organizationPartyId"/><econdition field-name="otherPartyId"/>
-                    <!-- agreement roles a little funny, anything other than Customer is a vendor of some sort so look for Customer or other -->
-                    <econdition field-name="otherRoleTypeId" operator="equals" value="Customer" ignore="!isFromPartyOrgInternal"/>
-                    <econdition field-name="otherRoleTypeId" operator="not-equals" value="Customer" ignore="isFromPartyOrgInternal"/>
-                    <econdition field-name="settlementTermId" operator="is-not-null"/>
-                    <order-by field-name="-fromDate"/>
-                </entity-find>
-                <if condition="agreementAndTermList"><set field="settlementTermId" from="agreementAndTermList[0].settlementTermId"/></if>
-            </if>
-
-            <!-- if no dueDate specified calculate based on invoiceDate and SettlementTerm -->
-            <if condition="dueDate == null &amp;&amp; settlementTermId">
-                <entity-find-one entity-name="mantle.account.invoice.SettlementTerm" value-field="settlementTerm"/>
-                <script><![CDATA[
-                    def dueDateDt = java.time.ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(invoiceDate.time), ec.entity.databaseTimeZone.toZoneId())
-
-                    switch (settlementTerm.termTypeEnumId) {
-                        case 'TtFinPaymentDayNextMonth':
-                            dueDateDt = dueDateDt.plusMonths(1)
-                        case 'TtFinPaymentDayCurMonth':
-                            int dayOfMonth = settlementTerm.termValue as long ?: 1
-                            int maxDays = dueDateDt.range(java.time.temporal.ChronoField.DAY_OF_MONTH).getMaximum()
-                            if (dayOfMonth > maxDays) dayOfMonth = maxDays
-                            dueDateDt = dueDateDt.withDayOfMonth(dayOfMonth)
-                            break
-                        default:
-                            dueDateDt = dueDateDt.plusDays((settlementTerm.termValue as long) ?: 0)
-                    }
-                    dueDate = java.sql.Timestamp.from(dueDateDt.toInstant())
-                    // could happen for TtFinPaymentDayCurMonth with a day less than today; handle differently?
-                    if (dueDate < invoiceDate) dueDate = invoiceDate
-                ]]></script>
-            </if>
-
             <service-call name="create#mantle.account.invoice.Invoice" in-map="context" out-map="context"/>
         </actions>
     </service>
@@ -357,6 +489,80 @@ along with this software (see the LICENSE.md file). If not, see
             <service-call name="update#mantle.account.invoice.Invoice" in-map="context" out-map="context"/>
         </actions>
     </service>
+    <service verb="checkSet" noun="InvoiceDueDate">
+        <in-parameters>
+            <parameter name="invoiceId"/>
+            <parameter name="overrideExisting" type="Boolean" default="false"/>
+        </in-parameters>
+        <actions>
+            <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice"/>
+            <if condition="invoice.dueDate != null &amp;&amp; !overrideExisting"><return/></if>
+
+            <set field="origDueDate" from="invoice.dueDate"/>
+            <set field="invoiceDate" from="invoice.invoiceDate"/>
+            <if condition="!invoice.settlementTermId">
+                <entity-find-count entity-name="mantle.party.PartyRole" count-field="fromOrgInternalCount">
+                    <econdition field-name="partyId" from="invoice.fromPartyId"/>
+                    <econdition field-name="roleTypeId" value="OrgInternal"/></entity-find-count>
+                <set field="isFromPartyOrgInternal" from="fromOrgInternalCount &gt; 0"/>
+
+                <set field="organizationPartyId" from="isFromPartyOrgInternal ? fromPartyId : toPartyId"/>
+                <set field="otherPartyId" from="isFromPartyOrgInternal ? toPartyId : fromPartyId"/>
+
+                <!-- get agreed on settlement term if none specified -->
+                <!-- find an AgreementTerm with a settlementTermId -->
+                <entity-find entity-name="mantle.party.agreement.AgreementAndTerm" list="agreementAndTermList">
+                    <date-filter/>
+                    <econdition field-name="organizationPartyId"/><econdition field-name="otherPartyId"/>
+                    <!-- agreement roles a little funny, anything other than Customer is a vendor of some sort so look for Customer or other -->
+                    <econdition field-name="otherRoleTypeId" operator="equals" value="Customer" ignore="!isFromPartyOrgInternal"/>
+                    <econdition field-name="otherRoleTypeId" operator="not-equals" value="Customer" ignore="isFromPartyOrgInternal"/>
+                    <econdition field-name="settlementTermId" operator="is-not-null"/>
+                    <order-by field-name="-fromDate"/>
+                </entity-find>
+                <if condition="agreementAndTermList"><set field="invoice.settlementTermId" from="agreementAndTermList[0].settlementTermId"/></if>
+
+                <!-- if this is a receivable (outgoing) invoice see if there is one on PartyAcctgPreference -->
+                <if condition="!invoice.settlementTermId &amp;&amp; isFromPartyOrgInternal">
+                    <service-call name="mantle.ledger.LedgerServices.find#PartyAcctgPreference" out-map="context"
+                            in-map="[organizationPartyId:invoice.fromPartyId]"/>
+                    <set field="invoice.settlementTermId" from="partyAcctgPreference?.settlementTermId"/>
+                </if>
+            </if>
+            <if condition="invoiceDate != null &amp;&amp; invoice.settlementTermId">
+                <entity-find-one entity-name="mantle.account.invoice.SettlementTerm" value-field="settlementTerm">
+                    <field-map field-name="settlementTermId" from="invoice.settlementTermId"/></entity-find-one>
+                <script><![CDATA[
+                    def dueDateDt = java.time.ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(invoiceDate.time), ec.entity.databaseTimeZone.toZoneId())
+
+                    switch (settlementTerm.termTypeEnumId) {
+                        case 'TtFinPaymentDayNextMonth':
+                            dueDateDt = dueDateDt.plusMonths(1)
+                            // fall through intentionally
+                        case 'TtFinPaymentDayCurMonth':
+                            int dayOfMonth = settlementTerm.termValue as long ?: 1
+                            int maxDays = dueDateDt.range(java.time.temporal.ChronoField.DAY_OF_MONTH).getMaximum()
+                            if (dayOfMonth > maxDays) dayOfMonth = maxDays
+                            dueDateDt = dueDateDt.withDayOfMonth(dayOfMonth)
+                            break
+                        default:
+                            dueDateDt = dueDateDt.plusDays((settlementTerm.termValue as long) ?: 0)
+                    }
+                    dueDate = java.sql.Timestamp.from(dueDateDt.toInstant())
+                    // could happen for TtFinPaymentDayCurMonth with a day less than today
+                    if (dueDate < invoiceDate) {
+                        dueDateDt = dueDateDt.plusMonths(1)
+                        dueDate = java.sql.Timestamp.from(dueDateDt.toInstant())
+                    }
+
+                    if (origDueDate == null || origDueDate != dueDate) {
+                        invoice.dueDate = dueDate
+                        invoice.update()
+                    }
+                ]]></script>
+            </if>
+        </actions>
+    </service>
 
     <service verb="create" noun="InvoiceItem">
         <in-parameters>
@@ -369,6 +575,7 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice"/>
             <if condition="!(invoice.statusId in ['InvoiceInProcess', 'InvoiceIncoming', 'InvoiceReceived'])">
                 <return error="true" message="Invoice ${invoiceId} is not in a status that allows change (In Process for receivables, Incoming or Received for payables)"/></if>
+            <if condition="itemDate == null"><set field="itemDate" from="invoice.invoiceDate"/></if>
             <service-call name="create#mantle.account.invoice.InvoiceItem" in-map="context" out-map="context"/>
         </actions>
     </service>
@@ -383,6 +590,10 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice"/>
             <if condition="!(invoice.statusId in ['InvoiceInProcess', 'InvoiceIncoming', 'InvoiceReceived'])">
                 <return error="true" message="Invoice ${invoiceId} is not in a status that allows change"/></if>
+            <if condition="itemDate == null">
+                <entity-find-one entity-name="mantle.account.invoice.InvoiceItem" value-field="invoiceItem"/>
+                <set field="itemDate" from="invoiceItem.itemDate ?: invoice.invoiceDate"/>
+            </if>
             <service-call name="update#mantle.account.invoice.InvoiceItem" in-map="context" out-map="context"/>
         </actions>
     </service>
@@ -471,7 +682,7 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="description" value="Invoice for Order ${orderId} part ${orderPartSeqId}"/>
             <service-call name="mantle.account.InvoiceServices.create#Invoice" out-map="context"
                     in-map="[invoiceTypeEnumId:'InvoiceSales', fromPartyId:orderPart.vendorPartyId, toPartyId:toPartyId,
-                        invoiceDate:invoiceDate, currencyUomId:orderHeader.currencyUomId,
+                        invoiceDate:invoiceDate, currencyUomId:orderHeader.currencyUomId, referenceNumber:orderPart.otherPartyOrderId,
                         description:description, systemMessageRemoteId:orderHeader.systemMessageRemoteId]"/>
 
             <if condition="partialOrderItemList"><then>
@@ -493,9 +704,10 @@ along with this software (see the LICENSE.md file). If not, see
                     <!-- create InvoiceItem -->
                     <!-- is prorate by quantity needed? -->
                     <service-call name="create#mantle.account.invoice.InvoiceItem" out-map="iiOut"
-                            in-map="[invoiceId:invoiceId, itemTypeEnumId:orderItem.itemTypeEnumId ?: 'ItemSales',
-                                amount:orderItem.unitAmount, description:orderItem.itemDescription,
-                                quantity:quantityNotBilled, quantityUomId:orderItem.quantityUomId,
+                            in-map="[invoiceId:invoiceId, invoiceItemSeqId:orderItem.orderItemSeqId,
+                                parentItemSeqId:orderItem.parentItemSeqId, itemTypeEnumId:orderItem.itemTypeEnumId ?: 'ItemSales',
+                                amount:orderItem.unitAmount, description:orderItem.itemDescription, quantity:quantityNotBilled,
+                                quantityUomId:orderItem.quantityUomId, otherPartyProductId:orderItem.otherPartyProductId,
                                 productId:orderItem.productId, itemDate:orderHeader.placedDate]"/>
 
                     <!-- for ShipmentItemSource set the invoiceId/invoiceItemSeqId on it -->
@@ -582,9 +794,8 @@ along with this software (see the LICENSE.md file). If not, see
 
                         <set field="description" value="Invoice for Order ${orderItem.orderId} part ${orderItem.orderPartSeqId} and Shipment ${shipmentId}"/>
                         <service-call name="mantle.account.InvoiceServices.create#Invoice" out-map="invOut"
-                                in-map="[invoiceTypeEnumId:'InvoiceSales',
-                                    fromPartyId:orderPart.vendorPartyId, toPartyId:toPartyId,
-                                    invoiceDate:invoiceDate, currencyUomId:orderHeader.currencyUomId,
+                                in-map="[invoiceTypeEnumId:'InvoiceSales', fromPartyId:orderPart.vendorPartyId, toPartyId:toPartyId,
+                                    invoiceDate:invoiceDate, currencyUomId:orderHeader.currencyUomId, referenceNumber:orderPart.otherPartyOrderId,
                                     description:description, systemMessageRemoteId:orderHeader.systemMessageRemoteId]"/>
                         <set field="invoiceId" from="invOut.invoiceId"/>
                         <script>invoiceIdByOrderPartIdMap.put(orderItem.orderId + ':' + orderItem.orderPartSeqId, invoiceId)</script>
@@ -593,7 +804,7 @@ along with this software (see the LICENSE.md file). If not, see
 
                 <if condition="invoiceId">
                     <!-- create InvoiceItem, OrderItemBilling, set invoiceId,invoiceItemSeqId -->
-
+                    <set field="parentInvoiceItemSeqId" from="null"/>
                     <set field="quantityNotOnItems" from="shipmentItemSource.quantity * (orderItem.selectedAmount ?: 1)"/>
 
                     <!-- first do AssetIssuance -->
@@ -611,7 +822,8 @@ along with this software (see the LICENSE.md file). If not, see
                                         amount:orderItem.unitAmount, description:orderItem.itemDescription,
                                         quantity:assetIssuance.quantity, assetId:assetIssuance.assetId,
                                         quantityUomId:orderItem.quantityUomId, productId:orderItem.productId,
-                                        itemDate:orderHeader.placedDate]"/>
+                                        otherPartyProductId:orderItem.otherPartyProductId, itemDate:orderHeader.placedDate]"/>
+                            <if condition="!parentInvoiceItemSeqId"><set field="parentInvoiceItemSeqId" from="iiOut.invoiceItemSeqId"/></if>
                             <service-call name="create#mantle.order.OrderItemBilling"
                                     in-map="[orderId:orderItem.orderId, orderItemSeqId:orderItem.orderItemSeqId,
                                         invoiceId:invoiceId, invoiceItemSeqId:iiOut.invoiceItemSeqId,
@@ -659,7 +871,8 @@ along with this software (see the LICENSE.md file). If not, see
                                         amount:orderItem.unitAmount, description:orderItem.itemDescription,
                                         quantity:assetReceipt.quantityAccepted, assetId:assetReceipt.assetId,
                                         quantityUomId:orderItem.quantityUomId, productId:orderItem.productId,
-                                        itemDate:orderHeader.placedDate]"/>
+                                        otherPartyProductId:orderItem.otherPartyProductId, itemDate:orderHeader.placedDate]"/>
+                            <if condition="!parentInvoiceItemSeqId"><set field="parentInvoiceItemSeqId" from="iiOut.invoiceItemSeqId"/></if>
                             <service-call name="create#mantle.order.OrderItemBilling"
                                     in-map="[orderId:orderItem.orderId, orderItemSeqId:orderItem.orderItemSeqId,
                                         invoiceId:invoiceId, invoiceItemSeqId:iiOut.invoiceItemSeqId,
@@ -692,21 +905,23 @@ along with this software (see the LICENSE.md file). If not, see
                     </if>
 
                     <!-- there should not be any quantity left over after issuance/receipt records, but just make sure -->
+                    <set field="mainIiOut" from="null"/>
                     <if condition="quantityNotOnItems &gt; 0">
                         <!-- NOTE: in this case we don't have an assetId -->
-                        <service-call name="create#mantle.account.invoice.InvoiceItem" out-map="iiOut"
+                        <service-call name="create#mantle.account.invoice.InvoiceItem" out-map="mainIiOut"
                                 in-map="[invoiceId:invoiceId, itemTypeEnumId:orderItem.itemTypeEnumId ?: 'ItemProduct',
                                     amount:orderItem.unitAmount, description:orderItem.itemDescription,
-                                    quantity:quantityNotOnItems,
-                                    quantityUomId:orderItem.quantityUomId, productId:orderItem.productId,
+                                    quantity:quantityNotOnItems, quantityUomId:orderItem.quantityUomId,
+                                    productId:orderItem.productId, otherPartyProductId:orderItem.otherPartyProductId,
                                     itemDate:orderHeader.placedDate]"/>
+                        <if condition="!parentInvoiceItemSeqId"><set field="parentInvoiceItemSeqId" from="mainIiOut.invoiceItemSeqId"/></if>
                         <!-- update ShipmentItemSource -->
                         <if condition="shipmentItemSource.invoiceItemSeqId"><then>
                             <!-- will have to split the ShipmentItemSource -->
                             <set field="newShipmentItemSource" from="shipmentItemSource.cloneValue()"/>
                             <set field="newShipmentItemSource.shipmentItemSourceId" from="null"/>
                             <entity-sequenced-id-primary value-field="newShipmentItemSource"/>
-                            <set field="newShipmentItemSource.invoiceItemSeqId" from="iiOut.invoiceItemSeqId"/>
+                            <set field="newShipmentItemSource.invoiceItemSeqId" from="mainIiOut.invoiceItemSeqId"/>
                             <set field="newShipmentItemSource.quantity" from="quantityNotOnItems"/>
                             <entity-create value-field="newShipmentItemSource"/>
 
@@ -714,7 +929,7 @@ along with this software (see the LICENSE.md file). If not, see
                             <entity-update value-field="shipmentItemSource"/>
                         </then><else>
                             <set field="shipmentItemSource.invoiceId" from="invoiceId"/>
-                            <set field="shipmentItemSource.invoiceItemSeqId" from="iiOut.invoiceItemSeqId"/>
+                            <set field="shipmentItemSource.invoiceItemSeqId" from="mainIiOut.invoiceItemSeqId"/>
                             <entity-update value-field="shipmentItemSource"/>
                         </else></if>
                     </if>
@@ -728,16 +943,19 @@ along with this software (see the LICENSE.md file). If not, see
                             <set field="oibBaseMap" from="[orderId:childOrderItem.orderId,
                                 orderItemSeqId:childOrderItem.orderItemSeqId]"/>
                             <entity-find entity-name="mantle.order.OrderItemBilling" list="orderItemBillingList">
-                                <econdition-object field="oibBaseMap"/></entity-find>
+                                <econdition field-name="orderId" from="childOrderItem.orderId"/>
+                                <econdition field-name="orderItemSeqId" from="childOrderItem.orderItemSeqId"/>
+                            </entity-find>
                             <if condition="!orderItemBillingList">
                                 <!-- is prorate by quantity needed? -->
-                                <service-call name="create#mantle.account.invoice.InvoiceItem" out-map="iiOut"
+                                <service-call name="create#mantle.account.invoice.InvoiceItem" out-map="childIiOut"
                                         in-map="[invoiceId:invoiceId, itemTypeEnumId:(childOrderItem.itemTypeEnumId ?: 'ItemSales'),
-                                            amount:childOrderItem.unitAmount, description:childOrderItem.itemDescription,
+                                            parentItemSeqId:parentInvoiceItemSeqId, amount:childOrderItem.unitAmount,
+                                            description:childOrderItem.itemDescription,
                                             quantity:((childOrderItem.quantity ?: 1) * (childOrderItem.selectedAmount ?: 1)),
                                             quantityUomId:childOrderItem.quantityUomId, itemDate:orderHeader.placedDate]"/>
                                 <service-call name="create#mantle.order.OrderItemBilling"
-                                        in-map="oibBaseMap + [invoiceId:invoiceId, invoiceItemSeqId:iiOut.invoiceItemSeqId,
+                                        in-map="oibBaseMap + [invoiceId:invoiceId, invoiceItemSeqId:childIiOut.invoiceItemSeqId,
                                             shipmentId:shipmentId, amount:childOrderItem.unitAmount,
                                             quantity:((childOrderItem.quantity ?: 1) * (childOrderItem.selectedAmount ?: 1))]"/>
                             </if>
@@ -793,6 +1011,10 @@ along with this software (see the LICENSE.md file). If not, see
                     <set field="orderId" from="orderAndPartId.substring(0, orderAndPartId.indexOf(':'))"/>
                     <set field="orderPartSeqId" from="orderAndPartId.substring(orderAndPartId.indexOf(':') + 1)"/>
                     <set field="invoiceId" from="invoiceIdByOrderIdEntry.value"/>
+                    <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice">
+                        <field-map field-name="invoiceId"/></entity-find-one>
+                    <if condition="invoice.statusId == 'InvoiceInProcess'"><service-call name="update#mantle.account.invoice.Invoice"
+                            in-map="[invoiceId:invoiceId, statusId:'InvoiceFinalized']"/></if>
                     <service-call name="mantle.account.PaymentServices.apply#OrderPaymentsToInvoice"
                             in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId, invoiceId:invoiceId]"/>
                 </iterate>
@@ -841,7 +1063,7 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="!toPartyId">
                 <entity-find entity-name="mantle.work.effort.WorkEffortParty" list="vendorWepList">
                     <date-filter/><econdition field-name="workEffortId"/>
-                    <econdition field-name="roleTypeId" value="VendorBillFrom"/></entity-find>
+                    <econdition field-name="roleTypeId" operator="in" value="Vendor,VendorBillFrom"/></entity-find>
                 <set field="vendorWep" from="vendorWepList?.first"/>
                 <set field="toPartyId" from="vendorWep.partyId"/>
             </if>
@@ -872,12 +1094,12 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="mantle.work.effort.WorkEffort" value-field="workEffort"/>
             <entity-find entity-name="mantle.work.effort.WorkEffortParty" list="billToList">
                 <date-filter/><econdition field-name="workEffortId"/>
-                <econdition field-name="roleTypeId" value="CustomerBillTo"/>
+                <econdition field-name="roleTypeId" operator="in" value="Customer,CustomerBillTo"/>
             </entity-find>
             <set field="billToWep" from="billToList ? billToList[0] : null"/>
             <entity-find entity-name="mantle.work.effort.WorkEffortParty" list="billFromList">
                 <date-filter/><econdition field-name="workEffortId"/>
-                <econdition field-name="roleTypeId" value="VendorBillFrom"/>
+                <econdition field-name="roleTypeId" operator="in" value="Vendor,VendorBillFrom"/>
             </entity-find>
             <set field="billFromWep" from="billFromList ? billFromList[0] : null"/>
 
@@ -1091,6 +1313,30 @@ along with this software (see the LICENSE.md file). If not, see
                     in-map="[invoiceId:invoiceId, statusId:'InvoiceCancelled']"/>
         </actions>
     </service>
+    <service verb="cancel" noun="InvoiceAndPayments">
+        <description>Cancel the Invoice and any Payment(s) applied to the Invoice and any Payments with matching forInvoiceId even if not applied.</description>
+        <in-parameters><parameter name="invoiceId" required="true"/></in-parameters>
+        <actions>
+            <!-- get related invoices -->
+            <set field="paymentIdSet" from="new TreeSet()"/>
+            <entity-find entity-name="mantle.account.payment.Payment" list="paymentList">
+                <econdition field-name="forInvoiceId" from="invoiceId"/></entity-find>
+            <if condition="paymentList"><script>paymentIdSet.addAll(paymentList*.paymentId)</script></if>
+
+            <entity-find entity-name="mantle.account.payment.PaymentApplication" list="paymentApplicationList">
+                <econdition field-name="invoiceId"/></entity-find>
+            <iterate list="paymentApplicationList" entry="paymentApplication">
+                <if condition="paymentApplication.paymentId"><script>paymentIdSet.add(paymentApplication.paymentId)</script></if></iterate>
+
+            <!-- most of the work is done through SECA rules, so here we just have to set statuses -->
+            <service-call name="update#mantle.account.invoice.Invoice" in-map="[invoiceId:invoiceId, statusId:'InvoiceCancelled']"/>
+            <iterate list="paymentIdSet" entry="paymentId">
+                <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
+                <set field="targetStatusId" from="payment.statusId in ['PmntProposed', 'PmntPromised'] ? 'PmntCancelled' : 'PmntVoid'"/>
+                <service-call name="update#mantle.account.payment.Payment" in-map="[paymentId:paymentId, statusId:targetStatusId]"/>
+            </iterate>
+        </actions>
+    </service>
     <service verb="unpay" noun="Invoice">
         <in-parameters>
             <parameter name="invoiceId" required="true"/>
@@ -1212,8 +1458,14 @@ along with this software (see the LICENSE.md file). If not, see
             </entity-find>
             <set field="updatedCount" from="0"/>
             <iterate list="invoiceList" entry="invoice">
-                <service-call name="mantle.account.InvoiceServices.get#InvoiceTotal" in-map="[invoiceId:invoice.invoiceId]" out-map="totalOut"/>
-                <if condition="totalOut.unpaidTotal == 0.0">
+                <if condition="invoice.unpaidTotal == null">
+                    <service-call name="mantle.account.InvoiceServices.get#InvoiceTotal" in-map="[invoiceId:invoice.invoiceId]" out-map="totalOut"/>
+                    <set field="invoice.invoiceTotal" from="totalOut.invoiceTotal"/>
+                    <set field="invoice.appliedPaymentsTotal" from="totalOut.appliedPaymentsTotal"/>
+                    <set field="invoice.unpaidTotal" from="totalOut.unpaidTotal"/>
+                    <entity-update value-field="invoice"/>
+                </if>
+                <if condition="invoice.unpaidTotal == 0.0">
                     <set field="invoice.statusId" value="InvoicePmtRecvd"/>
                     <entity-update value-field="invoice"/>
                     <set field="updatedCount" from="updatedCount + 1"/>
