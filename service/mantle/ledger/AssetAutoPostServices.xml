@@ -22,7 +22,8 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="acctgTransId"/></out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.product.receipt.AssetReceipt" value-field="assetReceipt" for-update="true"/>
-            <if condition="!assetReceipt"><return error="true" message="Not posting Inventory transaction, could not find Asset Receipt with ID ${assetReceiptId}"/></if>
+            <if condition="assetReceipt == null"><return error="true" message="Not posting inventory transaction, could not find Asset Receipt with ID ${assetReceiptId}"/></if>
+            <if condition="!assetReceipt.quantityAccepted"><return message="No quantity accepted on receipt, not posting inventory transaction to GL for receipt ${assetReceiptId}"/></if>
             <set field="asset" from="assetReceipt.'mantle.product.asset.Asset'"/>
             <set field="organizationPartyId" from="asset.ownerPartyId"/>
 
@@ -105,7 +106,7 @@ along with this software (see the LICENSE.md file). If not, see
             </if>
 
             <!-- set the amount -->
-            <set field="amount" from="(assetReceipt.quantityAccepted ?: 1) * asset.acquireCost"/>
+            <set field="amount" from="assetReceipt.quantityAccepted * asset.acquireCost"/>
 
             <!-- create the AcctgTrans -->
             <set field="useErrorJournal" from="false"/>
@@ -118,7 +119,7 @@ along with this software (see the LICENSE.md file). If not, see
             <service-call name="mantle.ledger.LedgerServices.create#AcctgTrans" out-map="context"
                     in-map="[acctgTransTypeEnumId:acctgTransTypeEnumId, organizationPartyId:organizationPartyId,
                         otherPartyId:otherPartyId, amountUomId:asset.acquireCostUomId, assetReceiptId:assetReceiptId,
-                        assetId:asset.assetId, shipmentId:assetReceipt.shipmentId]"/>
+                        assetId:asset.assetId, shipmentId:assetReceipt.shipmentId, transactionDate:assetReceipt.receivedDate]"/>
             <!-- note: could populate invoiceId, etc... but should we? for now no -->
 
             <!-- Credit to GatUnreceivedInventory or GatUnreceivedFixedAsset (look for assetTypeEnumId=AstTpFixed or parentEnumId=AstTpFixed) -->
@@ -154,6 +155,9 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="acctgTransId"/></out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.product.issuance.AssetIssuance" value-field="assetIssuance" for-update="true"/>
+            <if condition="assetIssuance == null"><return error="true" message="Not posting inventory transaction, could not find Asset Issuance with ID ${assetIssuanceId}"/></if>
+            <if condition="!assetIssuance.quantity"><return message="No quantity issued, not posting inventory transaction to GL for issuance ${assetIssuanceId}"/></if>
+
             <set field="asset" from="assetIssuance.'mantle.product.asset.Asset'"/>
             <set field="organizationPartyId" from="asset.ownerPartyId"/>
 
@@ -169,7 +173,6 @@ along with this software (see the LICENSE.md file). If not, see
             </if>
             <!-- check acquireCost -->
             <if condition="asset.acquireCost == null">
-                <log level="warn" message="Not posting Asset Issuance ${assetIssuanceId}, Asset has no acquireCost"/>
                 <set field="assetIssuance.acctgTransResultEnumId" value="AtrNoAcquireCost"/>
                 <entity-update value-field="assetIssuance"/>
                 <return message="Not posting Asset Issuance ${assetIssuanceId}, Asset has no acquireCost"/>
@@ -241,13 +244,13 @@ along with this software (see the LICENSE.md file). If not, see
             </if>
 
             <!-- set the amount -->
-            <set field="amount" from="(assetIssuance.quantity ?: 1) * asset.acquireCost"/>
+            <set field="amount" from="assetIssuance.quantity * asset.acquireCost"/>
 
             <!-- create the AcctgTrans -->
             <service-call name="mantle.ledger.LedgerServices.create#AcctgTrans" out-map="context"
                     in-map="[acctgTransTypeEnumId:acctgTransTypeEnumId, organizationPartyId:organizationPartyId,
                         otherPartyId:null, amountUomId:asset.acquireCostUomId, assetIssuanceId:assetIssuanceId,
-                        assetId:asset.assetId, shipmentId:assetIssuance.shipmentId]"/>
+                        assetId:asset.assetId, shipmentId:assetIssuance.shipmentId, transactionDate:assetIssuance.issuedDate]"/>
             <!-- note: could populate invoiceId, etc... but should we? for now no -->
 
             <set field="useErrorJournal" from="false"/>
@@ -300,6 +303,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <return error="true" message="Found more than one accounting transaction for Asset Issuance ${assetIssuanceId}, may already be reversed, not posting reverse transaction."/>
                 </else></if>
             </then><else>
+                <log level="warn" message="No accounting transaction found for Asset Issuance ${assetIssuanceId}, not posting reverse transaction."/>
                 <return message="No accounting transaction found for Asset Issuance ${assetIssuanceId}, not posting reverse transaction."/>
             </else></if>
         </actions>
@@ -604,7 +608,7 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="timePeriod.timePeriodTypeId != 'FiscalMonth'">
                 <return error="true" message="Can only post fixed asset depreciation to Fiscal Month periods"/></if>
             <if condition="!transactionDate">
-                <set field="transactionDate" from="new Timestamp(timePeriod.thruDate.time)"/></if>
+                <set field="transactionDate" from="new Timestamp(timePeriod.thruDate.time - 1)"/></if>
 
             <service-call name="mantle.ledger.LedgerServices.expand#ChildOrganizationList" out-map="expandResult"
                     in-map="[organizationPartyId:timePeriod.partyId, onlyWithNoAcctgPreference:true]"/>
@@ -738,7 +742,7 @@ along with this software (see the LICENSE.md file). If not, see
             <service-call name="mantle.ledger.LedgerServices.create#AcctgTrans" out-map="context"
                     in-map="[acctgTransTypeEnumId:acctgTransTypeEnumId, organizationPartyId:organizationPartyId,
                         otherPartyId:null, amountUomId:asset.acquireCostUomId, physicalInventoryId:physicalInventoryId,
-                        assetId:asset.assetId]"/>
+                        assetId:asset.assetId, transactionDate:transactionDate]"/>
             <!-- note: could populate invoiceId, etc... but should we? for now no -->
 
             <!-- Credit to GatUnreceivedInventory or GatUnreceivedFixedAsset (look for assetTypeEnumId=AstTpFixed or parentEnumId=AstTpFixed) -->

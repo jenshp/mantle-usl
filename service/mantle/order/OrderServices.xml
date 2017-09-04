@@ -107,7 +107,7 @@ General Order Placement and eCommerce Usage
         </in-parameters>
         <actions>
             <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"/>
-            <entity-set value-field="orderHeader" include="nonpk"/>
+            <entity-set value-field="orderHeader" include="nonpk" set-if-empty="true"/>
             <set field="orderHeader.orderRevision" from="orderHeader.orderRevision + 1"/>
             <entity-update value-field="orderHeader"/>
             <!-- <service-call name="update#mantle.order.OrderHeader" in-map="context"/> -->
@@ -188,7 +188,8 @@ General Order Placement and eCommerce Usage
         </actions>
     </service>
 
-    <service verb="create" noun="OrderItem" transaction="cache">
+    <service verb="create" noun="OrderItem">
+        <!-- TODO had transaction="cache" but causing issues with updating single Payment amount and sometimes part/header total when there are multiple promotions active (ie New Customer and BOGO) -->
         <in-parameters>
             <parameter name="orderId" required="true"/>
             <auto-parameters entity-name="mantle.order.OrderItem" include="nonpk"/>
@@ -212,7 +213,8 @@ General Order Placement and eCommerce Usage
             <service-call name="create#mantle.order.OrderItem" in-map="context" out-map="context"/>
         </actions>
     </service>
-    <service verb="update" noun="OrderItem" transaction="cache">
+    <service verb="update" noun="OrderItem">
+        <!-- TODO had transaction="cache" but causing issues with updating single Payment amount and sometimes part/header total when there are multiple promotions active (ie New Customer and BOGO) -->
         <in-parameters>
             <auto-parameters include="pk" required="true"/>
             <auto-parameters include="nonpk"/>
@@ -313,7 +315,8 @@ General Order Placement and eCommerce Usage
     </service>
 
     <!-- OrderProductQuantity aka "Cart" Services -->
-    <service verb="add" noun="OrderProductQuantity" authenticate="anonymous-all" transaction="cache">
+    <service verb="add" noun="OrderProductQuantity" authenticate="anonymous-all">
+        <!-- TODO had transaction="cache" but causing issues with updating single Payment amount and sometimes part/header total when there are multiple promotions active (ie New Customer and BOGO) -->
         <description>A service for an add-to-cart sort of operation, including:
             1. create an Order if no orderId is passed in
             2. determine the price to charge for the Product (and update based on quantity as needed)
@@ -370,7 +373,7 @@ General Order Placement and eCommerce Usage
             </if>
 
             <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader" for-update="true"/>
-            <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart"/>
+            <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart" for-update="true"/>
 
             <set field="productStoreId" from="productStoreId ?: orderHeader?.productStoreId"/>
             <entity-find-one entity-name="mantle.product.store.ProductStore" value-field="productStore"/>
@@ -465,7 +468,8 @@ General Order Placement and eCommerce Usage
             </else></if>
         </actions>
     </service>
-    <service verb="update" noun="OrderProductQuantity" authenticate="anonymous-all" transaction="cache">
+    <service verb="update" noun="OrderProductQuantity" authenticate="anonymous-all">
+        <!-- TODO had transaction="cache" but causing issues with updating single Payment amount and sometimes part/header total when there are multiple promotions active (ie New Customer and BOGO) -->
         <in-parameters>
             <parameter name="orderId" required="true"/>
             <parameter name="orderItemSeqId" required="true"/>
@@ -668,7 +672,27 @@ General Order Placement and eCommerce Usage
     <service verb="place" noun="Order">
         <!-- this used to use transaction="cache" but with record locks (for asset reservation) it is unreliable, gets old data from the TX cache -->
         <implements service="mantle.order.OrderServices.change#OrderStatusInterface"/>
-        <actions><service-call name="mantle.order.OrderServices.update#OrderStatus" out-map="context" in-map="context + [statusId:'OrderPlaced', placedDate:ec.user.nowTimestamp]"/></actions>
+        <actions>
+            <service-call name="mantle.order.OrderServices.update#OrderStatus" out-map="context" in-map="context + [statusId:'OrderPlaced', placedDate:ec.user.nowTimestamp]"/>
+
+            <!-- New Customer: see if this is the first order for a customer -->
+            <entity-find entity-name="mantle.order.OrderPart" list="orderPartList">
+                <econdition field-name="orderId"/></entity-find>
+            <set field="customerPartyId" from="orderPartList ? orderPartList[0].customerPartyId : null"/>
+            <if condition="!customerPartyId"><return/></if><!-- if no customer we don't know if they are new -->
+            <set field="includeStatuses" from="['OrderPlaced', 'OrderProcessing', 'OrderApproved', 'OrderSent', 'OrderCompleted', 'OrderHold']"/>
+            <entity-find-count entity-name="mantle.order.OrderHeaderAndPart" count-field="ordersCount">
+                <econdition field-name="customerPartyId"/><econdition field-name="orderId" operator="not-equals"/>
+                <econdition field-name="statusId" operator="in" from="includeStatuses"/>
+                <econdition field-name="partStatusId" operator="in" from="includeStatuses" or-null="true"/>
+            </entity-find-count>
+            <if condition="ordersCount == 0">
+                <iterate list="orderPartList" entry="orderPart">
+                    <set field="orderPart.isNewCustomer" value="Y"/>
+                    <entity-update value-field="orderPart"/>
+                </iterate>
+            </if>
+        </actions>
     </service>
     <service verb="approve" noun="Order">
         <description>For manual order approval, requires ORDER_APPROVE permission.</description>

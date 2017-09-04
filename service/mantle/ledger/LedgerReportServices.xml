@@ -262,11 +262,6 @@ along with this software (see the LICENSE.md file). If not, see
                         in-map="[organizationPartyId:organizationPartyId, timePeriodIdList:timePeriodIdList,
                             classInfoById:classInfoById, glAccountClassEnumId:classId, negateDebit:true]"/>
             </iterate>
-
-            <service-call name="mantle.ledger.LedgerReportServices.get#GlAccountClassInfoSums" out-map="netEarningsOut"
-                    in-map="[classInfoById:classInfoById, classIdList:['REVENUE', 'CONTRA_REVENUE', 'COST_OF_SALES',
-                        'INCOME', 'EXPENSE', 'NON_OP_EXPENSE', 'RETAINED_EARNINGS', 'DISTRIBUTION']]"/>
-            <set field="netEarningsMap" from="netEarningsOut.totalPosted"/>
         </actions>
     </service>
 
@@ -778,10 +773,10 @@ along with this software (see the LICENSE.md file). If not, see
                     <econdition field-name="transactionDate" operator="greater-equals" from="fromTimestamp"/>
                     <econdition field-name="transactionDate" operator="less-equals" from="thruTimestamp"/>
                     <econdition field-name="isPosted" value="Y"/>
-                    <select-field field-name="acctgTransId,glJournalId,transactionDate,acctgTransTypeEnumId,description"/>
+                    <select-field field-name="acctgTransId,glJournalId,transactionDate,acctgTransTypeEnumId,description,txDescription,txVoucherRef"/>
                     <select-field field-name="invoiceId,paymentId,assetId,productId,acctgTransEntrySeqId"/>
                     <select-field field-name="otherPartyId,pseudoId,organizationName,firstName,lastName "/>
-                    <select-field field-name="paymentRefNum,referenceNumber,amount,debitCreditFlag"/>
+                    <select-field field-name="paymentRefNum,referenceNumber,otherPartyOrderId,amount,debitCreditFlag"/>
                     <order-by field-name="transactionDate,acctgTransId,acctgTransEntrySeqId"/>
                 </entity-find>
 
@@ -802,7 +797,10 @@ along with this software (see the LICENSE.md file). If not, see
 
                     <if condition="rowMap.paymentId &amp;&amp; !rowMap.invoiceId">
                         <entity-find entity-name="mantle.account.payment.PaymentApplication" list="pmtAppList">
-                            <econdition field-name="paymentId" from="rowMap.paymentId"/><order-by field-name="appliedDate"/></entity-find>
+                            <econdition field-name="paymentId" from="rowMap.paymentId"/>
+                            <econdition field-name="amountApplied" operator="not-equals" from="0.0"/>
+                            <order-by field-name="appliedDate"/>
+                        </entity-find>
                         <set field="rowMap.invoiceId" from="pmtAppList ? pmtAppList[0].invoiceId : null"/>
                         <!-- not currently using referenceNumber if Invoice through Payment:
                             <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice">

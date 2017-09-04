@@ -116,10 +116,9 @@ along with this software (see the LICENSE.md file). If not, see
                     <parameter name="telecomNumber" type="Map">
                         <auto-parameters entity-name="mantle.party.contact.TelecomNumber"/></parameter>
                 </parameter>
-                <parameter name="customerDetail" type="Map">
-                    <auto-parameters entity-name="mantle.party.PartyDetail"/></parameter>
-                <parameter name="vendorDetail" type="Map">
-                    <auto-parameters entity-name="mantle.party.PartyDetail"/></parameter>
+                <parameter name="customerDetail" type="Map"><auto-parameters entity-name="mantle.party.PartyDetail"/></parameter>
+                <parameter name="customerEmail"/>
+                <parameter name="vendorDetail" type="Map"><auto-parameters entity-name="mantle.party.PartyDetail"/></parameter>
                 <parameter name="isCustomerInternalOrg" type="Boolean"/>
                 <parameter name="isVendorInternalOrg" type="Boolean"/>
                 <parameter name="orderPartPartyList" type="List"><parameter name="orderPartParty">
@@ -267,6 +266,13 @@ along with this software (see the LICENSE.md file). If not, see
                 boolean isVendorInternalOrg = ec.entity.find("mantle.party.PartyRole")
                         .condition("partyId", orderPart.vendorPartyId).condition("roleTypeId", "OrgInternal").one() as boolean
 
+                String customerEmail = null
+                if (orderPart.customerPartyId) {
+                    customerEmail = ec.service.sync().name("mantle.party.ContactServices.get#PartyContactInfo")
+                            .parameter("partyId", orderPart.customerPartyId).parameter("emailContactMechPurposeId", "EmailOrder")
+                            .parameter("defaultToPrimaryPurpose", true).call()?.emailAddress
+                }
+
                 boolean hasShippableItems = orderItemList.find({ it.product?.productTypeEnumId in ['PtAsset', 'PtDigitalAsset', 'PtAssetUse'] }) != null
                 boolean singleLot = false
                 boolean newerInventory = false
@@ -337,6 +343,14 @@ along with this software (see the LICENSE.md file). If not, see
                 EntityValue customerShipToDetail = orderPartPartyList.find({ it.roleTypeId == 'CustomerShipTo' })
                 EntityValue customerBillToDetail = orderPartPartyList.find({ it.roleTypeId == 'CustomerBillTo' })
 
+                // find duplicate orders by customerPartyId and otherPartyOrderId
+                def duplicateOrderPartList = null
+                if (!isCustomerInternalOrg && orderPart.otherPartyOrderId) {
+                    duplicateOrderPartList = ec.entity.find("mantle.order.OrderPart").condition("orderId", "!=", orderId)
+                            .condition("otherPartyOrderId", orderPart.otherPartyOrderId)
+                            .condition("customerPartyId", orderPart.customerPartyId).list()
+                }
+
                 // find applicable open returns
                 Map openReturnsResult = ec.service.sync().name("mantle.order.ReturnServices.find#OrderOpenReturns")
                         .parameters([orderId:orderPart.orderId, orderPartSeqId:orderPart.orderPartSeqId]).call()
@@ -349,11 +363,12 @@ along with this software (see the LICENSE.md file). If not, see
                         paymentsTotal:paymentsTotal, partTotalUnpaid:partTotalUnpaid,
                         postalAddress:postalAddress, postalAddressStateGeo:postalAddressStateGeo,
                         telecomNumber:telecomNumber, facility:facility,
-                        facilityContactInfo:facilityContactInfo, customerDetail:customerDetail, vendorDetail:vendorDetail,
-                        isCustomerInternalOrg:isCustomerInternalOrg, isVendorInternalOrg:isVendorInternalOrg,
+                        facilityContactInfo:facilityContactInfo, customerDetail:customerDetail, customerEmail:customerEmail,
+                        vendorDetail:vendorDetail, isCustomerInternalOrg:isCustomerInternalOrg, isVendorInternalOrg:isVendorInternalOrg,
                         orderPartPartyList:orderPartPartyList, customerShipToDetail:customerShipToDetail,
                         customerBillToDetail:customerBillToDetail, partShipmentItemSourceList:partShipmentItemSourceList,
-                        partShipmentIdSet:partShipmentIdSet, openReturnList:openReturnsResult.openReturnList])
+                        partShipmentIdSet:partShipmentIdSet, duplicateOrderPartList:duplicateOrderPartList,
+                        openReturnList:openReturnsResult.openReturnList])
             }
             ]]></script>
             <!-- <log level="warn" message="======== OrderDisplayInfo orderPartInfoList: ${orderPartInfoList}"/> -->
@@ -435,9 +450,10 @@ along with this software (see the LICENSE.md file). If not, see
                 <!-- ========== Sales Order Validations ========== -->
 
                 <!-- get other OrderParts for various validations -->
+                <set field="includeStatuses" from="['OrderPlaced', 'OrderProcessing', 'OrderApproved', 'OrderSent', 'OrderCompleted', 'OrderHold']"/>
                 <entity-find entity-name="mantle.order.OrderPart" list="otherPartList">
                     <econdition field-name="customerPartyId"/><econdition field-name="orderId" operator="not-equals"/>
-                    <econdition field-name="statusId" operator="not-in" value="OrderRejected,OrderCancelled,OrderWishList,OrderGiftRegistry"/>
+                    <econdition field-name="statusId" operator="in" value="includeStatuses"/>
                 </entity-find>
                 <set field="otherPartCount" from="otherPartList.size()"/>
 
@@ -692,7 +708,7 @@ along with this software (see the LICENSE.md file). If not, see
                         detailLinkPath:storeEmail.detailLinkPath]"/>
 
                     <if condition="!storeEmail.emailTemplateId"><continue/></if>
-                    <service-call name="org.moqui.impl.EmailServices.send#EmailTemplate" out-map="sendOut" out-map-add-to-existing="true"
+                    <service-call name="org.moqui.impl.EmailServices.send#EmailTemplate" out-map="sendOut" out-map-add-to-existing="false"
                             in-map="[emailTemplateId:storeEmail.emailTemplateId, emailTypeEnumId:emailTypeEnumId,
                                 toAddresses:toAddresses, bodyParameters:bodyParameters, toUserId:toUserId]"/>
                     <script>if (sendOut.emailMessageId) { ec.service.sync().name("create#mantle.order.OrderEmailMessage").parameter("orderId", orderId)
