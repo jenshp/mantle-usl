@@ -494,11 +494,21 @@ along with this software (see the LICENSE.md file). If not, see
                 <exclude field-name="statusId"/></auto-parameters>
         </in-parameters>
         <actions>
-            <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice"/>
+            <entity-find-one entity-name="mantle.account.invoice.Invoice" value-field="invoice" for-update="true"/>
             <if condition="!(invoice.statusId in ['InvoiceInProcess', 'InvoiceIncoming', 'InvoiceReceived'])">
                 <return error="true" message="Invoice ${invoiceId} is not in a status that allows change"/></if>
 
             <service-call name="update#mantle.account.invoice.Invoice" in-map="context" out-map="context"/>
+
+            <!-- if invoiceDate changed and there any AssetIssuance records associated with this then update issuedDate on them -->
+            <if condition="invoiceDate &amp;&amp; invoiceDate != invoice.invoiceDate">
+                <entity-find entity-name="mantle.product.issuance.AssetIssuance" list="assetIssuanceList" for-update="true">
+                    <econdition field-name="invoiceId"/></entity-find>
+                <iterate list="assetIssuanceList" entry="assetIssuance">
+                    <service-call name="mantle.product.AssetServices.update#AssetIssuedDate"
+                            in-map="[assetIssuanceId:assetIssuance.assetIssuanceId, issuedDate:invoiceDate]"/>
+                </iterate>
+            </if>
         </actions>
     </service>
     <service verb="update" noun="InvoiceClosed">
@@ -512,6 +522,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="referenceNumber"/>
             <parameter name="otherPartyOrderId"/>
             <parameter name="description"/>
+            <parameter name="lastUpdatedStamp" type="Timestamp"/>
         </in-parameters>
         <actions>
             <service-call name="update#mantle.account.invoice.Invoice" in-map="context" out-map="context"/>
@@ -561,7 +572,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <entity-find-one entity-name="mantle.account.invoice.SettlementTerm" value-field="settlementTerm">
                     <field-map field-name="settlementTermId" from="invoice.settlementTermId"/></entity-find-one>
                 <script><![CDATA[
-                    def dueDateDt = java.time.ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(invoiceDate.time), ec.entity.databaseTimeZone.toZoneId())
+                    def dueDateDt = java.time.ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(invoiceDate.time), java.time.ZoneId.systemDefault())
 
                     switch (settlementTerm.termTypeEnumId) {
                         case 'TtFinPaymentDayNextMonth':
@@ -771,9 +782,22 @@ along with this software (see the LICENSE.md file). If not, see
                 </if>
             </iterate>
 
+            <!-- set Payment.forInvoiceId on order part payments, if not already set -->
+            <set field="partPayments" from="orderPart.payments"/>
+            <iterate list="partPayments" entry="partPayment">
+                <if condition="!partPayment.forInvoiceId">
+                    <set field="partPayment.forInvoiceId" from="invoiceId"/>
+                    <entity-update value-field="partPayment"/>
+                </if>
+            </iterate>
+
             <!-- update Invoice status to statusId passed in -->
             <if condition="statusId"><service-call name="update#mantle.account.invoice.Invoice"
                     in-map="[invoiceId:invoiceId, statusId:statusId]"/></if>
+
+            <!-- try to apply order payments to new invoices -->
+            <service-call name="mantle.account.PaymentServices.apply#OrderPaymentsToInvoice"
+                    in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId, invoiceId:invoiceId]"/>
         </actions>
     </service>
 
@@ -784,7 +808,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="shipmentId" required="true"/>
             <parameter name="statusId"><description>If specified after create set to this statusId (always created
                 initially in InvoiceInProcess, so there must be a transition to specified status).</description></parameter>
-            <parameter name="invoiceDate" type="Timestamp" default="ec.user.nowTimestamp"/>
+            <parameter name="invoiceDate" type="Timestamp"><description>Defaults to Shipment packedDate, estimatedShipDate, or now.</description></parameter>
 
             <!-- for reuse for purchase orders, represent the differences between sales and purchase order shipments -->
             <parameter name="handleIssuances" type="Boolean" default="true"/>
@@ -793,7 +817,11 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <out-parameters><parameter name="invoiceIdByOrderPartIdMap" type="Map"/></out-parameters>
         <actions>
+            <entity-find-one entity-name="mantle.shipment.Shipment" value-field="shipment"/>
+            <if condition="shipment == null"><return error="true" message="Shipment not found with ID ${shipmentId}"/></if>
+
             <set field="invoiceIdByOrderPartIdMap" from="[:]"/>
+            <set field="invoiceDate" from="invoiceDate ?: shipment.packedDate ?: shipment.estimatedShipDate ?: ec.user.nowTimestamp"/>
 
             <entity-find entity-name="mantle.shipment.ShipmentItemSource" list="shipmentItemSourceList" for-update="true">
                 <econdition field-name="shipmentId"/>
@@ -806,8 +834,10 @@ along with this software (see the LICENSE.md file). If not, see
             <iterate list="shipmentItemSourceList" entry="shipmentItemSource">
                 <set field="orderItem" from="shipmentItemSource.'mantle.order.OrderItem'"/>
                 <if condition="orderItem == null"><continue/></if>
+                <!-- invoice even if unitAmount is zero, otherwise no record of sales for inventory/etc purposes (sales invoice analysis)
                 <set field="itemAmount" from="(orderItem.unitAmount ?: 0) * (orderItem.quantity ?: 0)"/>
                 <if condition="itemAmount == 0"><continue/></if>
+                -->
 
                 <!-- look for existing OrderItemBilling quantity: quantity already billed minus quantity on order shipments -->
                 <!-- bill only quantity not already billed -->
@@ -869,8 +899,9 @@ along with this software (see the LICENSE.md file). If not, see
                     <!-- first do AssetIssuance -->
                     <if condition="handleIssuances">
                         <entity-find entity-name="mantle.product.issuance.AssetIssuance" list="assetIssuanceList" for-update="true">
-                            <econdition-object field="[orderId:orderItem.orderId, orderItemSeqId:orderItem.orderItemSeqId,
-                                shipmentId:shipmentId]"/>
+                            <econdition field-name="orderId" from="orderItem.orderId"/>
+                            <econdition field-name="orderItemSeqId" from="orderItem.orderItemSeqId"/>
+                            <econdition field-name="shipmentId"/>
                             <order-by field-name="orderItemSeqId"/>
                         </entity-find>
                         <iterate list="assetIssuanceList" entry="assetIssuance">
@@ -891,10 +922,20 @@ along with this software (see the LICENSE.md file). If not, see
                                         invoiceId:invoiceId, invoiceItemSeqId:iiOut.invoiceItemSeqId,
                                         assetIssuanceId:assetIssuance.assetIssuanceId, shipmentId:shipmentId,
                                         amount:orderItem.unitAmount, quantity:issuanceQuantityToBill]"/>
+
                             <!-- set invoiceId and invoiceItemSeqId on AssetIssuance -->
                             <set field="assetIssuance.invoiceId" from="invoiceId"/>
                             <set field="assetIssuance.invoiceItemSeqId" from="iiOut.invoiceItemSeqId"/>
                             <entity-update value-field="assetIssuance"/>
+                            <!-- if invoiceDate not on same day (in Java default time zone) as issuedDate items were packed/issued
+                                and then shipment packed much later so set issuedDate to invoiceDate so that COGS/etc are on same
+                                day as receivable invoice -->
+                            <if condition="invoiceDate.toString().substring(0, 10) != assetIssuance.issuedDate.toString().substring(0, 10)">
+                                <log message="AssetIssuance ${assetIssuance.assetIssuanceId} issuedDate ${assetIssuance.issuedDate.toString().substring(0, 10)} on different day from invoiceDate ${invoiceDate.toString().substring(0, 10)}, updating to invoiceDate"/>
+                                <service-call name="mantle.product.AssetServices.update#AssetIssuedDate"
+                                        in-map="[assetIssuanceId:assetIssuance.assetIssuanceId, issuedDate:invoiceDate]"/>
+                            </if>
+
                             <!-- update ShipmentItemSource -->
                             <if condition="shipmentItemSource.invoiceItemSeqId"><then>
                                 <!-- will have to split the ShipmentItemSource -->
@@ -1376,6 +1417,60 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <service-call name="mantle.account.InvoiceServices.unpay#Invoice"
                     in-map="[invoiceId:invoiceId, statusId:'InvoiceCancelled']"/>
+
+            <!-- zero quantity on OrderItemBilling, ReturnItemBilling, WorkEffortBilling -->
+            <entity-find entity-name="mantle.order.OrderItemBilling" list="oibList">
+                <econdition field-name="invoiceId"/></entity-find>
+            <iterate list="oibList" entry="oib">
+                <set field="oib.quantity" from="0.0"/>
+                <entity-update value-field="oib"/>
+            </iterate>
+            <entity-find entity-name="mantle.order.return.ReturnItemBilling" list="ribList">
+                <econdition field-name="invoiceId"/></entity-find>
+            <iterate list="ribList" entry="rib">
+                <set field="rib.quantity" from="0.0"/>
+                <entity-update value-field="rib"/>
+            </iterate>
+            <entity-find entity-name="mantle.work.effort.WorkEffortBilling" list="webList">
+                <econdition field-name="invoiceId"/></entity-find>
+            <iterate list="webList" entry="web">
+                <set field="web.percentage" from="0.0"/>
+                <entity-update value-field="web"/>
+            </iterate>
+
+            <!-- clear ShipmentItemSource, AssetIssuance, AssetReceipt -->
+            <entity-find entity-name="mantle.shipment.ShipmentItemSource" list="sisList">
+                <econdition field-name="invoiceId"/></entity-find>
+            <iterate list="sisList" entry="sis">
+                <set field="sis.invoiceId" from="null"/><set field="sis.invoiceItemSeqId" from="null"/>
+                <entity-update value-field="sis"/>
+            </iterate>
+            <entity-find entity-name="mantle.product.issuance.AssetIssuance" list="aisList">
+                <econdition field-name="invoiceId"/></entity-find>
+            <iterate list="aisList" entry="ais">
+                <set field="ais.invoiceId" from="null"/><set field="ais.invoiceItemSeqId" from="null"/>
+                <entity-update value-field="ais"/>
+            </iterate>
+            <entity-find entity-name="mantle.product.receipt.AssetReceipt" list="arcList">
+                <econdition field-name="invoiceId"/></entity-find>
+            <iterate list="arcList" entry="arc">
+                <set field="arc.invoiceId" from="null"/><set field="arc.invoiceItemSeqId" from="null"/>
+                <entity-update value-field="arc"/>
+            </iterate>
+
+            <!-- clear TimeEntry (by invoiceId, vendorInvoiceId) -->
+            <entity-find entity-name="mantle.work.time.TimeEntry" list="timeEntryList">
+                <econdition field-name="invoiceId"/></entity-find>
+            <iterate list="timeEntryList" entry="timeEntry">
+                <set field="timeEntry.invoiceId" from="null"/><set field="timeEntry.invoiceItemSeqId" from="null"/>
+                <entity-update value-field="timeEntry"/>
+            </iterate>
+            <entity-find entity-name="mantle.work.time.TimeEntry" list="timeEntryList">
+                <econdition field-name="vendorInvoiceId" from="invoiceId"/></entity-find>
+            <iterate list="timeEntryList" entry="timeEntry">
+                <set field="timeEntry.vendorInvoiceId" from="null"/><set field="timeEntry.vendorInvoiceItemSeqId" from="null"/>
+                <entity-update value-field="timeEntry"/>
+            </iterate>
         </actions>
     </service>
     <service verb="cancel" noun="InvoiceAndPayments">

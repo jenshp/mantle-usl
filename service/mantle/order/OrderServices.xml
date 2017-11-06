@@ -326,8 +326,12 @@ General Order Placement and eCommerce Usage
         <in-parameters>
             <parameter name="orderId"/>
             <parameter name="orderPartSeqId"/>
+            <!-- OrderHeader settings -->
+            <parameter name="productStoreId"/>
+            <parameter name="currencyUomId"/>
+            <parameter name="salesChannelEnumId"/>
             <!-- OrderPart settings -->
-            <parameter name="customerPartyId"/><parameter name="currencyUomId"/><parameter name="productStoreId"/>
+            <parameter name="customerPartyId"/>
             <parameter name="carrierPartyId"/><parameter name="shipmentMethodEnumId"/>
 
             <parameter name="productId" required="true"/>
@@ -339,6 +343,7 @@ General Order Placement and eCommerce Usage
                 <description>If true update existing item by productId, if false always create a new item</description></parameter>
             <parameter name="itemTypeEnumId" default-value="ItemProduct"/>
             <parameter name="unitAmount" type="BigDecimal"/>
+            <parameter name="standardCost" type="BigDecimal"/>
             <parameter name="requiredByDate" type="Timestamp"/>
             <parameter name="otherPartyProductId"/>
         </in-parameters>
@@ -400,8 +405,9 @@ General Order Placement and eCommerce Usage
                 <!-- no existing open (cart) order found? create one -->
                 <if condition="!orderId">
                     <service-call name="mantle.order.OrderServices.create#Order" out-map="createOrderOut"
-                            in-map="[currencyUomId:currencyUomId, productStoreId:productStoreId, vendorPartyId:vendorPartyId,
-                                customerPartyId:customerPartyId, carrierPartyId:carrierPartyId, shipmentMethodEnumId:shipmentMethodEnumId]"/>
+                            in-map="[currencyUomId:currencyUomId, productStoreId:productStoreId, salesChannelEnumId:salesChannelEnumId,
+                                vendorPartyId:vendorPartyId, customerPartyId:customerPartyId, carrierPartyId:carrierPartyId,
+                                shipmentMethodEnumId:shipmentMethodEnumId]"/>
                     <set field="orderId" from="createOrderOut.orderId"/>
                     <set field="orderPartSeqId" from="createOrderOut.orderPartSeqId"/>
                 </if>
@@ -457,6 +463,7 @@ General Order Placement and eCommerce Usage
                 <set field="orderItemSeqId" from="orderItem.orderItemSeqId"/>
                 <set field="orderPartSeqId" from="orderItem.orderPartSeqId" set-if-empty="false"/>
                 <set field="unitAmount" from="unitAmount != null ? unitAmount : orderItem.unitAmount"/>
+                <set field="standardCost" from="standardCost != null ? standardCost : orderItem.standardCost"/>
                 <set field="quantity" from="addToQuantity ? quantity + orderItem.quantity : quantity"/>
                 <!-- if requiredByDate on orderItem is less than that passed in, make sure to use it instead of the new later one -->
                 <if condition="orderItem.requiredByDate &amp;&amp; requiredByDate &amp;&amp; orderItem.requiredByDate &lt; requiredByDate">
@@ -531,7 +538,7 @@ General Order Placement and eCommerce Usage
         <actions>
             <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader" for-update="true"/>
             <if condition="orderPartSeqId"><then>
-                <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart"/>
+                <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart" for-update="true"/>
             </then><else>
                 <!-- just get the first part -->
                 <entity-find entity-name="mantle.order.OrderPart" list="orderPartList">
@@ -600,11 +607,10 @@ General Order Placement and eCommerce Usage
                 <set field="payment" from="paymentList.first"/>
             </else></if>
 
-            <if condition="payment"><then>
+            <if condition="payment != null"><then>
                 <!-- update existing payment -->
                 <if condition="paymentMethodId"><set field="payment.paymentMethodId" from="paymentMethodId"/></if>
                 <if condition="finAccountId"><set field="payment.finAccountId" from="finAccountId"/></if>
-                <set field="payment.amount" from="orderPart.partTotal"/>
                 <entity-update value-field="payment"/>
                 <set field="paymentId" from="payment.paymentId"/>
             </then><else-if condition="paymentMethodId || paymentInstrumentEnumId || finAccountId">
@@ -654,14 +660,16 @@ General Order Placement and eCommerce Usage
         </in-parameters>
         <out-parameters><parameter name="oldStatusId"/><parameter name="statusChanged" type="Boolean"/></out-parameters>
         <actions>
-            <entity-find entity-name="mantle.order.OrderPart" list="orderPartList"><econdition field-name="orderId"/></entity-find>
+            <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader" for-update="true"/>
+            <entity-find entity-name="mantle.order.OrderPart" list="orderPartList" for-update="true">
+                <econdition field-name="orderId"/></entity-find>
             <iterate list="orderPartList" entry="orderPart">
                 <service-call name="update#mantle.order.OrderPart" out-map="context"
                         in-map="[orderId:orderId, orderPartSeqId:orderPart.orderPartSeqId, statusId:statusId]"/>
             </iterate>
 
             <set field="updateMap" from="[orderId:orderId, statusId:statusId]"/>
-            <if condition="placedDate != null"><script>updateMap.put('placedDate', placedDate)</script></if>
+            <if condition="placedDate != null &amp;&amp; orderHeader.placedDate == null"><script>updateMap.put('placedDate', placedDate)</script></if>
             <service-call name="update#mantle.order.OrderHeader" out-map="context" in-map="updateMap"/>
         </actions>
     </service>
@@ -673,10 +681,11 @@ General Order Placement and eCommerce Usage
         <!-- this used to use transaction="cache" but with record locks (for asset reservation) it is unreliable, gets old data from the TX cache -->
         <implements service="mantle.order.OrderServices.change#OrderStatusInterface"/>
         <actions>
-            <service-call name="mantle.order.OrderServices.update#OrderStatus" out-map="context" in-map="context + [statusId:'OrderPlaced', placedDate:ec.user.nowTimestamp]"/>
+            <service-call name="mantle.order.OrderServices.update#OrderStatus" out-map="context"
+                    in-map="context + [statusId:'OrderPlaced', placedDate:ec.user.nowTimestamp]"/>
 
             <!-- New Customer: see if this is the first order for a customer -->
-            <entity-find entity-name="mantle.order.OrderPart" list="orderPartList">
+            <entity-find entity-name="mantle.order.OrderPart" list="orderPartList" for-update="true">
                 <econdition field-name="orderId"/></entity-find>
             <set field="customerPartyId" from="orderPartList ? orderPartList[0].customerPartyId : null"/>
             <if condition="!customerPartyId"><return/></if><!-- if no customer we don't know if they are new -->
@@ -684,7 +693,7 @@ General Order Placement and eCommerce Usage
             <entity-find-count entity-name="mantle.order.OrderHeaderAndPart" count-field="ordersCount">
                 <econdition field-name="customerPartyId"/><econdition field-name="orderId" operator="not-equals"/>
                 <econdition field-name="statusId" operator="in" from="includeStatuses"/>
-                <econdition field-name="partStatusId" operator="in" from="includeStatuses" or-null="true"/>
+                <!-- <econdition field-name="partStatusId" operator="in" from="includeStatuses" or-null="true"/> -->
             </entity-find-count>
             <if condition="ordersCount == 0">
                 <iterate list="orderPartList" entry="orderPart">
@@ -826,17 +835,10 @@ General Order Placement and eCommerce Usage
                 <set field="shipmentItemQuantityReducedMap" from="[:]"/>
                 <iterate list="itemShipmentItemSourceList" entry="itemShipmentItemSource">
                     <script>addToBigDecimalInMap(itemShipmentItemSource.shipmentId, itemShipmentItemSource.quantityNotHandled, shipmentItemQuantityReducedMap)</script>
-                    <if condition="itemShipmentItemSource.quantity == itemShipmentItemSource.quantityNotHandled">
-                        <!-- none handled yet, just remove -->
-                        <entity-delete value-field="itemShipmentItemSource"/>
-                        <else>
-                            <!-- some handled, reduce quantity by quantityNotHandled -->
-                            <service-call name="update#mantle.shipment.ShipmentItemSource"
-                                    in-map="[shipmentItemSourceId:itemShipmentItemSource.shipmentItemSourceId,
-                                        quantity:(itemShipmentItemSource.quantity - itemShipmentItemSource.quantityNotHandled),
-                                        quantityNotHandled:0]"/>
-                        </else>
-                    </if>
+                    <!-- reduce quantity by quantityNotHandled -->
+                    <service-call name="update#mantle.shipment.ShipmentItemSource"
+                            in-map="[shipmentItemSourceId:itemShipmentItemSource.shipmentItemSourceId, quantityNotHandled:0,
+                                quantity:(itemShipmentItemSource.quantity - itemShipmentItemSource.quantityNotHandled)]"/>
                 </iterate>
                 <iterate list="shipmentItemQuantityReducedMap" entry="shipmentItemQuantityReduced" key="shipmentId">
                     <entity-find-one entity-name="mantle.shipment.ShipmentItem" value-field="shipmentItem">
@@ -1176,6 +1178,7 @@ General Order Placement and eCommerce Usage
             <if condition="paymentList.size() == 1">
                 <service-call name="update#mantle.account.payment.Payment"
                         in-map="[paymentId:paymentList.get(0).paymentId, amount:totalSum]"/>
+                <!-- <log level="warn" message="Set order part ${orderId}:${orderPartSeqId} total to ${orderPart.partTotal} and payment ${paymentList.get(0).paymentId} amount to ${totalSum}"/> -->
             </if>
 
             <!-- now update the OrderHeader.grandTotal -->

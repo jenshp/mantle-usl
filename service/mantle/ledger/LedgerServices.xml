@@ -515,7 +515,7 @@ along with this software (see the LICENSE.md file). If not, see
 
                 <if condition="glAccount.disallowPosting == 'Y'">
                     <message>GL Account ${glAccount.glAccountId} does not allow posting</message>
-                    <log message="In AcctgTransEntry ${acctgTransId}:${acctgTransEntry.acctgTransEntrySeqId} GL Account ${glAccount.glAccountId} does not allow posting"/>
+                    <log message="In AcctgTrans ${acctgTransId} GL Account ${glAccount.glAccountId} does not allow posting"/>
                     <set field="useErrorJournal" from="true"/>
                 </if>
             </iterate>
@@ -540,27 +540,36 @@ along with this software (see the LICENSE.md file). If not, see
             <service-call name="mantle.ledger.LedgerServices.get#OrganizationFiscalTimePeriods" out-map="context"
                     in-map="[organizationPartyId:acctgTrans.organizationPartyId, filterDate:acctgTrans.transactionDate]"/>
             <if condition="!timePeriodList">
-                <message error="true">Not posting transaction ${acctgTransId}, could not find time period for organization ${acctgTrans.organizationPartyId} at ${ec.l10n.format(acctgTrans.transactionDate, null)}.</message></if>
+                <message>Not posting transaction ${acctgTransId}, could not find time period for organization ${acctgTrans.organizationPartyId} at ${ec.l10n.format(acctgTrans.transactionDate, null)}.</message>
+                <set field="useErrorJournal" from="true"/>
+            </if>
             <iterate entry="timePeriod" list="timePeriodList">
                 <!-- make sure the TimePeriod isn't closed -->
                 <if condition="timePeriod.isClosed == 'Y' &amp;&amp; !(acctgTrans.acctgTransTypeEnumId in ['AttPeriodClosing', 'AttNetIncomeClosing'])">
-                    <message error="true">Not posting transaction ${acctgTransId}, time period closed ${ec.resource.expand('TimePeriodNameTemplate','',timePeriod)}.</message></if>
+                    <message>Not posting transaction ${acctgTransId}, time period closed ${ec.resource.expand('TimePeriodNameTemplate','',timePeriod)}.</message>
+                    <set field="useErrorJournal" from="true"/>
+                </if>
             </iterate>
 
             <!-- make sure the glAccountId and amount fields are set -->
             <iterate entry="acctgTransEntry" list="acctgTransEntryList">
                 <if condition="!acctgTransEntry.glAccountId">
-                    <message error="true">Accounting transaction entry ${acctgTransId}:${acctgTransEntry.acctgTransEntrySeqId} has no glAccountId.</message></if>
+                    <message>Accounting transaction entry ${acctgTransId}:${acctgTransEntry.acctgTransEntrySeqId} has no glAccountId.</message>
+                    <set field="useErrorJournal" from="true"/>
+                </if>
                 <if condition="acctgTransEntry.amount == null">
-                    <message error="true">Accounting transaction entry ${acctgTransId}:${acctgTransEntry.acctgTransEntrySeqId} has no amount.</message></if>
+                    <message>Accounting transaction entry ${acctgTransId}:${acctgTransEntry.acctgTransEntrySeqId} has no amount.</message>
+                    <set field="useErrorJournal" from="true"/>
+                </if>
             </iterate>
 
             <if condition="verifyOnly">
-                <if condition="!ec.message.hasError()"><message>Accounting transaction ${acctgTransId} is verified for posting.</message></if>
+                <if condition="useErrorJournal || ec.message.hasError()">
+                    <message>Accounting transaction ${acctgTransId} is verified for posting.</message></if>
                 <return/>
             </if>
 
-            <if condition="ec.message.hasError()">
+            <if condition="useErrorJournal || ec.message.hasError()">
                 <service-call name="mantle.ledger.LedgerServices.find#PartyAcctgPreference" out-map="context"
                         in-map="[organizationPartyId:acctgTrans.organizationPartyId]"/>
                 <if condition="partyAcctgPreference?.errorGlJournalId"><then>
@@ -570,16 +579,9 @@ along with this software (see the LICENSE.md file). If not, see
                     <script>ec.message.clearErrors()</script>
                     <return/>
                 </then><else>
-                    <!-- if not errorGlJournalId return errors -->
-                    <check-errors/>
+                    <!-- if no errorGlJournalId return with messages/errors -->
+                    <return/>
                 </else></if>
-            </if>
-
-            <!-- only update GlAccountOrganization and GlAccountOrgTimePeriod if realTimeGlSummary == Y; there is now a job that
-                periodically updates these records to simplify GL posting and avoid lock contention and conflicts -->
-            <if condition="doRealTimeGlSummary">
-                <service-call name="mantle.ledger.LedgerServices.update#GlAccountOrgSummariesForTx"
-                        in-map="[acctgTransId:acctgTransId, timePeriodList:timePeriodList, isUnpost:false]"/>
             </if>
 
             <check-errors/>
@@ -588,6 +590,13 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="acctgTrans.isPosted" value="Y"/>
             <set field="acctgTrans.postedDate" from="ec.user.nowTimestamp"/>
             <entity-update value-field="acctgTrans"/>
+
+            <!-- only update GlAccountOrganization and GlAccountOrgTimePeriod if realTimeGlSummary == Y; there is now a job that
+                periodically updates these records to simplify GL posting and avoid lock contention and conflicts -->
+            <if condition="doRealTimeGlSummary">
+                <service-call name="mantle.ledger.LedgerServices.update#GlAccountOrgSummariesForTx"
+                        in-map="[acctgTransId:acctgTransId, timePeriodList:timePeriodList, isUnpost:false]"/>
+            </if>
         </actions>
     </service>
 
@@ -705,11 +714,12 @@ along with this software (see the LICENSE.md file). If not, see
                 <!-- have already iterated through the entry list once, all GlAccount records should be there -->
                 <set field="glAccount" from="glAccountById.get(acctgTransEntry.glAccountId)"/>
 
-                <if condition="glAccount.isDebit.equals('Y') ? !isUnpost : isUnpost"><then>
+                <if condition="glAccount.isDebit.equals('Y')"><then>
                     <set field="postingAmount" from="acctgTransEntry.debitCreditFlag == 'D' ? acctgTransEntry.amount : -acctgTransEntry.amount"/>
                 </then><else>
                     <set field="postingAmount" from="acctgTransEntry.debitCreditFlag == 'D' ? -acctgTransEntry.amount : acctgTransEntry.amount"/>
                 </else></if>
+                <if condition="isUnpost"><set field="postingAmount" from="-postingAmount"/></if>
 
                 <!-- FUTURE: do anything with RESOURCE or potentially other root GL account classes? -->
 
@@ -743,14 +753,15 @@ along with this software (see the LICENSE.md file). If not, see
                         </if>
                     </if>
 
-                    <if condition="acctgTransEntry.debitCreditFlag == 'D' ? !isUnpost : isUnpost"><then>
-                        <set field="glAccountOrgTimePeriod.postedDebits" from="(glAccountOrgTimePeriod.postedDebits ?: 0.0) + acctgTransEntry.amount"/>
+                    <set field="dcTransEntryAmount" from="isUnpost ? -acctgTransEntry.amount : acctgTransEntry.amount"/>
+                    <if condition="acctgTransEntry.debitCreditFlag == 'D'"><then>
+                        <set field="glAccountOrgTimePeriod.postedDebits" from="(glAccountOrgTimePeriod.postedDebits ?: 0.0) + dcTransEntryAmount"/>
                         <if condition="!isPeriodClosing"><set field="glAccountOrgTimePeriod.postedDebitsNoClosing"
-                                from="(glAccountOrgTimePeriod.postedDebitsNoClosing ?: 0.0) + acctgTransEntry.amount"/></if>
+                                from="(glAccountOrgTimePeriod.postedDebitsNoClosing ?: 0.0) + dcTransEntryAmount"/></if>
                     </then><else>
-                        <set field="glAccountOrgTimePeriod.postedCredits" from="(glAccountOrgTimePeriod.postedCredits ?: 0.0) + acctgTransEntry.amount"/>
+                        <set field="glAccountOrgTimePeriod.postedCredits" from="(glAccountOrgTimePeriod.postedCredits ?: 0.0) + dcTransEntryAmount"/>
                         <if condition="!isPeriodClosing"><set field="glAccountOrgTimePeriod.postedCreditsNoClosing"
-                                from="(glAccountOrgTimePeriod.postedCreditsNoClosing ?: 0.0) + acctgTransEntry.amount"/></if>
+                                from="(glAccountOrgTimePeriod.postedCreditsNoClosing ?: 0.0) + dcTransEntryAmount"/></if>
                     </else></if>
 
                     <set field="glAccountOrgTimePeriod.endingBalance" from="(glAccountOrgTimePeriod.endingBalance ?: 0.0) + postingAmount"/>
@@ -785,6 +796,8 @@ along with this software (see the LICENSE.md file). If not, see
 
                         <set field="nextGlAccountOrgTimePeriod.balanceLastUpdated" from="ec.user.nowTimestamp"/>
                         <entity-create value-field="nextGlAccountOrgTimePeriod" or-update="true"/>
+
+                        <set field="lastGlAccountOrgTimePeriod" from="nextGlAccountOrgTimePeriod"/>
                     </iterate>
                 </iterate>
             </iterate>
@@ -1145,8 +1158,9 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <actions>
             <entity-find-one entity-name="mantle.party.time.TimePeriod" value-field="timePeriod" for-update="true"/>
-            <set field="fromTimestamp" from="ec.l10n.parseTimestamp(timePeriod.fromDate.toString() + ' 00:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS')"/>
-            <set field="thruTimestamp" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 23:59:59.999', 'yyyy-MM-dd HH:mm:ss.SSS')"/>
+            <!-- FUTURE: instead of using Java system default TimeZone use one configured for the organization -->
+            <set field="fromTimestamp" from="ec.l10n.parseTimestamp(timePeriod.fromDate.toString() + ' 00:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
+            <set field="thruTimestamp" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 23:59:59.999', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
 
             <log message="Closing period ${timePeriodId} ${timePeriod.periodName}"/>
 
@@ -1208,8 +1222,9 @@ along with this software (see the LICENSE.md file). If not, see
         <in-parameters><parameter name="timePeriodId" required="true"/></in-parameters>
         <actions>
             <entity-find-one entity-name="mantle.party.time.TimePeriod" value-field="timePeriod" for-update="true"/>
-            <set field="fromTimestamp" from="ec.l10n.parseTimestamp(timePeriod.fromDate.toString() + ' 00:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS')"/>
-            <set field="thruTimestamp" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 23:59:59.999', 'yyyy-MM-dd HH:mm:ss.SSS')"/>
+            <!-- FUTURE: instead of using Java system default TimeZone use one configured for the organization -->
+            <set field="fromTimestamp" from="ec.l10n.parseTimestamp(timePeriod.fromDate.toString() + ' 00:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
+            <set field="thruTimestamp" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 23:59:59.999', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
 
             <!-- get or create the next TimePeriod (gets nextTimePeriodId, nextTimePeriod); always set its begin balance
                 from this period's end balance -->
@@ -1357,7 +1372,8 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <entity-find-one entity-name="mantle.party.time.TimePeriod" value-field="timePeriod"/>
             <set field="organizationPartyId" from="timePeriod.partyId"/>
-            <set field="transactionDate" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 20:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS')"/>
+            <!-- FUTURE: instead of using Java system default TimeZone use one configured for the organization -->
+            <set field="transactionDate" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 20:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
             <if condition="ec.user.nowTimestamp &lt; transactionDate"><message>Fiscal period ${timePeriodId} has not yet ended (ends on ${timePeriod.thruDate})</message></if>
             <if condition="timePeriod.isClosed != 'Y'"><message>Fiscal period ${timePeriodId} is not yet closed, Period Closing transactions may be posted after a period is closed and posting period close transactions before a period is closed may result in non-zero balances, requiring another closing transaction</message></if>
 
@@ -1449,6 +1465,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="organizationPartyId"/>
             <parameter name="lastRunTime" type="Timestamp"/>
             <parameter name="recalculateClosed" type="Boolean" default="false"/>
+            <parameter name="deleteExisting" type="Boolean" default="false"/>
         </in-parameters>
         <actions>
             <set field="nowTimestamp" from="ec.user.nowTimestamp"/>
@@ -1470,6 +1487,21 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="organizationPartyIds" from="new HashSet(timePeriodList*.partyId)"/>
             <set field="noTxOrgPartyIds" from="new HashSet()"/>
             <set field="glAccountIsDebitMap" from="[:]"/>
+
+            <if condition="deleteExisting">
+                <entity-find-count entity-name="mantle.ledger.account.GlAccountOrgTimePeriod" count-field="glaotpCount">
+                    <econdition field-name="organizationPartyId" operator="in" from="organizationPartyIds"/>
+                </entity-find-count>
+                <log message="Before delete existing found ${glaotpCount} GlAccountOrgTimePeriod records for organizations ${organizationPartyIds}"/>
+                <entity-delete-by-condition entity-name="mantle.ledger.account.GlAccountOrgTimePeriod">
+                    <econdition field-name="organizationPartyId" operator="in" from="organizationPartyIds"/>
+                    <econdition field-name="timePeriodId" operator="in" from="timePeriodList*.timePeriodId" ignore="recalculateClosed"/>
+                </entity-delete-by-condition>
+                <entity-find-count entity-name="mantle.ledger.account.GlAccountOrgTimePeriod" count-field="glaotpCount">
+                    <econdition field-name="organizationPartyId" operator="in" from="organizationPartyIds"/>
+                </entity-find-count>
+                <log message="After delete existing found ${glaotpCount} GlAccountOrgTimePeriod records for organizations ${organizationPartyIds}"/>
+            </if>
 
             <log message="[Recalculate GlAccountOrgSummaries] lastRunTime ${lastRunTime}, ${timePeriodList.size()} time periods, organizations: ${organizationPartyIds}"/>
 
@@ -1564,8 +1596,9 @@ along with this software (see the LICENSE.md file). If not, see
 
                 <set field="timePeriodId" from="timePeriod.timePeriodId"/>
                 <set field="organizationPartyId" from="timePeriod.partyId"/>
-                <set field="fromTimestamp" from="ec.l10n.parseTimestamp(timePeriod.fromDate.toString() + ' 00:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS')"/>
-                <set field="thruTimestamp" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 23:59:59.999', 'yyyy-MM-dd HH:mm:ss.SSS')"/>
+                <!-- FUTURE: instead of using Java system default TimeZone use one configured for the organization -->
+                <set field="fromTimestamp" from="ec.l10n.parseTimestamp(timePeriod.fromDate.toString() + ' 00:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
+                <set field="thruTimestamp" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 23:59:59.999', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
 
                 <!-- get or create the next TimePeriod (gets nextTimePeriodId, nextTimePeriod); always set its begin balance
                     from this period's end balance -->
@@ -1697,8 +1730,7 @@ along with this software (see the LICENSE.md file). If not, see
                 ]]></script>
             </iterate>
 
-            <message>Updated GL Account Org Summaries for orgs ${organizationPartyIds} in ${System.currentTimeMillis() - startTime}ms; updated ${gaoUpdated} Organization and ${gaotpUpdated} Period records</message>
-            <log message="Updated GL Account Org Summaries for orgs ${organizationPartyIds} in ${System.currentTimeMillis() - startTime}ms; updated ${gaoUpdated} GlAccountOrganization and ${gaotpUpdated} GlAccountOrgTimePeriod records"/>
+            <message>Updated GL Account Org Summaries for orgs ${organizationPartyIds} in ${System.currentTimeMillis() - startTime}ms; updated ${gaoUpdated} Organization and ${gaotpUpdated} Period summary records</message>
         </actions>
     </service>
 

@@ -52,8 +52,8 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
     <service verb="search" noun="Party">
         <in-parameters>
-            <parameter name="searchIndexName" default="mantle"/>
-            <parameter name="searchPartyDocType" default="MantleParty"/>
+            <parameter name="searchPartyIndexName" default-value="mantle_party"/>
+            <parameter name="searchPartyDocType" default-value="MantleParty"/>
             <parameter name="anyField"/>
 
             <parameter name="roleTypeId"/><parameter name="partyClassificationId"/>
@@ -84,7 +84,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="documentListPageRangeHigh" type="Integer"/>
         </out-parameters>
         <actions>
-            <set field="indexName" from="searchIndexName ?: 'mantle'"/>
+            <set field="indexName" from="searchPartyIndexName ?: 'mantle_party'"/>
             <set field="documentType" from="searchPartyDocType ?: 'MantleParty'"/>
             <set field="orderByField" from="orderByField ?: 'combinedName'"/>
 
@@ -600,6 +600,54 @@ along with this software (see the LICENSE.md file). If not, see
                 <service-call name="update#mantle.party.Person" in-map="context"/></if>
             <if condition="party.partyTypeEnumId == 'PtyOrganization'">
                 <service-call name="update#mantle.party.Organization" in-map="context"/></if>
+        </actions>
+    </service>
+
+    <service verb="convert" noun="PartyToOrganization">
+        <description>Convert another type Party to an Organization type.
+            If organizationName not specified is generated from Person firstName, middleName, and lastName.</description>
+        <in-parameters>
+            <parameter name="partyId" required="true"/>
+            <auto-parameters entity-name="mantle.party.Organization" include="nonpk"/>
+        </in-parameters>
+        <actions>
+            <entity-find-one entity-name="mantle.party.Party" value-field="party" for-update="true"/>
+            <if condition="party.partyTypeEnumId == 'PtyOrganization'">
+                <return message="Party ${party.pseudoId} is already an organization"/></if>
+            <entity-find-one entity-name="mantle.party.Person" value-field="person"/>
+            <if condition="person != null">
+                <if condition="!organizationName"><set field="organizationName"
+                        value="${person.firstName?:''}${person.middleName ? ' ' + person.middleName : ''}${person.lastName ? ' ' + person.lastName : ''}"/></if>
+                <entity-delete value-field="person"/>
+            </if>
+            <set field="party.partyTypeEnumId" value="PtyOrganization"/>
+            <entity-update value-field="party"/>
+            <service-call name="store#mantle.party.Organization" in-map="context"/>
+        </actions>
+    </service>
+    <service verb="convert" noun="PartyToPerson">
+        <description>Convert another type Party to a Person type.
+            If firstName, lastName are not specified tries to split organizationName.</description>
+        <in-parameters>
+            <parameter name="partyId" required="true"/>
+            <auto-parameters entity-name="mantle.party.Person" include="nonpk"/>
+        </in-parameters>
+        <actions>
+            <entity-find-one entity-name="mantle.party.Party" value-field="party" for-update="true"/>
+            <if condition="party.partyTypeEnumId == 'PtyPerson'">
+                <return message="Party ${party.pseudoId} is already a person"/></if>
+            <entity-find-one entity-name="mantle.party.Organization" value-field="organization"/>
+            <if condition="organization != null">
+                <set field="orgName" from="organization.organizationName"/>
+                <if condition="!firstName &amp;&amp; !lastName">
+                    <set field="firstName" from="orgName.contains(' ') ? orgName.substring(0, orgName.lastIndexOf(' ')) : orgName"/>
+                    <set field="lastName" from="orgName.contains(' ') ? orgName.substring(orgName.lastIndexOf(' ') + 1) : ''"/>
+                </if>
+                <entity-delete value-field="organization"/>
+            </if>
+            <set field="party.partyTypeEnumId" value="PtyPerson"/>
+            <entity-update value-field="party"/>
+            <service-call name="store#mantle.party.Person" in-map="context"/>
         </actions>
     </service>
 
