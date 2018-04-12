@@ -88,7 +88,12 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="documentType" from="searchPartyDocType ?: 'MantleParty'"/>
             <set field="orderByField" from="orderByField ?: 'combinedName'"/>
 
-            <set field="queryString" from="anyField"/>
+            <!-- auto prefix with '*:' so that highlighting works -->
+            <!-- TODO: would be nice to somehow parse the query string, matching parentheses and quotes, and add *: for the field if none for each term -->
+            <set field="queryString" from="anyField ? anyField.trim() : ''"/>
+            <if condition="queryString &amp;&amp; !queryString.contains(':') &amp;&amp; !queryString.contains('(') &amp;&amp; !queryString.contains('&quot;')">
+                <set field="queryString" from="anyField.split(' ').collect({ '*:' + it }).join(' ')"/></if>
+
             <if condition="queryString"><set field="queryString" from="'(' + queryString + ')'"/></if>
 
             <if condition="roleTypeId">
@@ -140,11 +145,15 @@ along with this software (see the LICENSE.md file). If not, see
                 <set field="queryString" from="(queryString ? queryString + ' AND ' : '' ) + 'contactMechs.postalCode:' + postalCode + '*'"/></if>
 
             <set field="orderByFields" from="[orderByField.replace('combinedName', 'combinedName.keyword').replace('username', 'userAccounts.username.keyword')]"/>
+            <set field="highlightFields" from="['roles.roleTypeId', 'classifications.class', 'pseudoId',
+                    'identifications.idValue', 'combinedName', 'firstName', 'lastName', 'organizationName', 'userAccounts.username',
+                    'contactMech.infoString', 'contactMechs.address1', 'contactMechs.unitNumber', 'contactMechs.postalCode',
+                    'contactMechs.city', 'contactMechs.state', 'contactMechs.areaCode', 'contactMechs.contactNumber', 'contactMechs.city']"/>
             <!-- <log level="warn" message="Product search queryString: ${queryString}"/> -->
             <if condition="queryString">
                 <service-call name="org.moqui.search.SearchServices.search#DataDocuments" out-map="context"
                         in-map="[indexName:indexName, documentType:documentType, queryString:queryString, flattenDocument:false,
-                             orderByFields:orderByFields, pageIndex:pageIndex, pageSize:pageSize]"/>
+                             orderByFields:orderByFields, highlightFields:highlightFields, pageIndex:pageIndex, pageSize:pageSize]"/>
             </if>
         </actions>
     </service>
@@ -253,7 +262,7 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- ========== Party CrUD Services ========== -->
     <!-- ========================================= -->
 
-    <service verb="create" noun="Account" authenticate="false">
+    <service verb="create" noun="Account" authenticate="anonymous-all">
         <description>
             Create a basic user account including:
             - Party/Person
@@ -279,7 +288,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="locale"/>
             <parameter name="timeZone"/>
 
-            <parameter name="userGroupId"/>
+            <!-- removed because creates a security hole as any open access to this service that doesn't restrict this parameter could be used to get admin access to system: <parameter name="userGroupId"/> -->
             <parameter name="roleTypeId"/>
             <parameter name="loginAfterCreate" type="Boolean" default="true"/>
         </in-parameters>
@@ -291,10 +300,14 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <!-- do this first to get a password validation ASAP -->
             <if condition="username">
-                <!-- see if username already in use -->
+                <!-- see if username already in use (instead of catching on unique index) -->
                 <entity-find entity-name="moqui.security.UserAccount" list="existingUaList">
                     <econdition field-name="username"/></entity-find>
-                <if condition="existingUaList"><return error="true" message="Username [${username}] is already in use. Choose another."/></if>
+                <if condition="existingUaList"><return error="true" message="Username ${username} is already in use. Please choose another."/></if>
+                <!-- see if emailAddress already in use (instead of catching on unique index) -->
+                <entity-find entity-name="moqui.security.UserAccount" list="existingUaList">
+                    <econdition field-name="emailAddress"/></entity-find>
+                <if condition="existingUaList"><return error="true" message="Email ${emailAddress} is already in use. Login with username ${existingUaList[0].username}"/></if>
 
                 <set field="userFullName" value="${ec.resource.expand('PartyFullNameTemplate','')}"/>
                 <if condition="newPassword"><then>
@@ -319,10 +332,6 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="username">
                 <!-- add the partyId to the UserAccount -->
                 <service-call name="update#moqui.security.UserAccount" in-map="[userId:newUaOut.userId, partyId:newPartyOut.partyId]"/>
-                <if condition="userGroupId">
-                    <service-call name="create#moqui.security.UserGroupMember"
-                            in-map="[userGroupId:userGroupId, userId:userId, fromDate:ec.user.nowTimestamp]"/>
-                </if>
                 <!-- login the user -->
                 <if condition="loginAfterCreate &amp;&amp; newPassword">
                     <script>ec.user.loginUser(username, newPassword)</script></if>
@@ -487,17 +496,20 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="create" noun="Person">
         <in-parameters>
-            <parameter name="partyId"/>
+            <auto-parameters entity-name="mantle.party.Party"/>
             <auto-parameters entity-name="mantle.party.Person" include="nonpk"/>
             <parameter name="firstName" required="true"/>
             <parameter name="lastName" required="true"/>
             <parameter name="roleTypeId"/>
+            <parameter name="partyClassificationId"/>
         </in-parameters>
         <out-parameters><parameter name="partyId"/></out-parameters>
         <actions>
-            <service-call name="create#mantle.party.Party" in-map="[partyId:partyId, partyTypeEnumId:'PtyPerson']" out-map="context"/>
+            <service-call name="create#mantle.party.Party" in-map="context + [partyTypeEnumId:'PtyPerson']" out-map="context"/>
             <service-call name="create#mantle.party.Person" in-map="context"/>
             <if condition="roleTypeId"><service-call name="create#mantle.party.PartyRole" in-map="[partyId:partyId, roleTypeId:roleTypeId]"/></if>
+            <if condition="partyClassificationId"><service-call name="mantle.party.PartyServices.set#PartyClassification"
+                    in-map="[partyId:partyId, partyClassificationId:partyClassificationId]"/></if>
         </actions>
     </service>
     <service verb="create" noun="PersonCustomer">
@@ -509,6 +521,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="firstName" required="true"/>
             <parameter name="lastName" required="true"/>
             <parameter name="roleTypeId" default-value="Customer"/>
+            <parameter name="partyClassificationId"/>
 
             <!-- store#PartyContactInfo fields -->
             <parameter name="postalContactMechPurposeId" default-value="PostalPrimary"/>
@@ -565,7 +578,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <service-call name="create#mantle.party.PartyRole" in-map="[partyId:partyId, roleTypeId:'Contact']"/>
                 <service-call name="create#mantle.party.PartyRelationship" in-map="[fromDate:ec.user.nowTimestamp,
                         relationshipTypeEnumId:'PrtContact', fromPartyId:partyId, toPartyId:accountPartyId,
-                        fromRoleTypeId:'Contact', toRoleTypeId:roleTypeId]"/>
+                        fromRoleTypeId:'Contact', toRoleTypeId:'Account']"/>
             </if>
             <if condition="emailAddress &amp;&amp; newPassword">
                 <service-call name="mantle.party.PartyServices.create#PartyUserAccount" in-map="context" out-map="context"/>
@@ -574,14 +587,14 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
     <service verb="create" noun="Organization">
         <in-parameters>
-            <parameter name="partyId"/>
+            <auto-parameters entity-name="mantle.party.Party"/>
             <auto-parameters entity-name="mantle.party.Organization" include="nonpk"/>
             <parameter name="organizationName" required="true"/>
             <parameter name="roleTypeId"/>
         </in-parameters>
         <out-parameters><parameter name="partyId"/></out-parameters>
         <actions>
-            <service-call name="create#mantle.party.Party" in-map="[partyId:partyId, partyTypeEnumId:'PtyOrganization']" out-map="context"/>
+            <service-call name="create#mantle.party.Party" in-map="context + [partyTypeEnumId:'PtyOrganization']" out-map="context"/>
             <service-call name="create#mantle.party.Organization" in-map="context"/>
             <if condition="roleTypeId"><service-call name="create#mantle.party.PartyRole" in-map="[partyId:partyId, roleTypeId:roleTypeId]"/></if></actions>
     </service>
@@ -1013,14 +1026,17 @@ along with this software (see the LICENSE.md file). If not, see
                     <iterate list="userAccountList" entry="userAccount"><script>userIdSet.add(userAccount.userId)</script></iterate>
                 </iterate>
 
+                <!-- don't do this, send notifications even if no user IDs so that subscribers to all notifications on the topic still get them:
                 <if condition="!userIdSet">
                     <log level="info" message="Not sending ${document._type} DataDocument notification, no userIds found"/>
                     <continue/>
                 </if>
+                -->
 
                 <script><![CDATA[
                     def nm = ec.makeNotificationMessage()
-                    nm.topic((String) document._type).message((Map<String, Object>) document).userIds((Set) userIdSet)
+                    nm.topic((String) document._type).message((Map<String, Object>) document)
+                    if (userIdSet) nm.userIds((Set) userIdSet)
                     def notificationTopic = nm.getNotificationTopic()
                     if (notificationTopic == null && document._type) {
                         def dataDocument = ec.entity.find("moqui.entity.document.DataDocument").condition("dataDocumentId", document._type).useCache(true).one()

@@ -177,10 +177,12 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters>
             <parameter name="rootGlAccountClassEnumId"/>
             <parameter name="ancestorClassEnumIdSet" type="Set"/>
+            <parameter name="isContra"><description>From Enumeration.optionIndicator, Y if contra</description></parameter>
         </out-parameters>
         <actions>
             <entity-find-one entity-name="moqui.basic.Enumeration" value-field="enumValue" cache="true">
                 <field-map field-name="enumId" from="glAccountClassEnumId"/></entity-find-one>
+            <set field="isContra" from="enumValue.optionIndicator"/>
 
             <set field="ancestorClassEnumIdSet" from="new HashSet([glAccountClassEnumId])"/>
             <if condition="enumValue.parentEnumId"><then>
@@ -203,9 +205,13 @@ along with this software (see the LICENSE.md file). If not, see
             <service-call name="mantle.ledger.LedgerServices.find#RootGlAccountClassEnum" out-map="context"
                     in-map="[glAccountClassEnumId:entityValue.glAccountClassEnumId]"/>
 
-            <set field="entityValue.isDebit" from="'DEBIT'.equals(rootGlAccountClassEnumId) ? 'Y' : 'N'"/>
+            <if condition="isContra == 'Y'"><then>
+                <set field="entityValue.isDebit" from="'DEBIT'.equals(rootGlAccountClassEnumId) ? 'N' : 'Y'"/>
+            </then><else>
+                <set field="entityValue.isDebit" from="'DEBIT'.equals(rootGlAccountClassEnumId) ? 'Y' : 'N'"/>
+            </else></if>
             <set field="entityValue.isTemporary" value="N"/>
-            <set field="tempAccountClasses" from="['REVENUE', 'CONTRA_REVENUE', 'COST_OF_SALES', 'INCOME', 'EXPENSE', 'NON_OP_EXPENSE']"/>
+            <set field="tempAccountClasses" from="['REVENUE', 'COST_OF_SALES', 'INCOME', 'EXPENSE', 'NON_OP_EXPENSE']"/>
             <iterate list="tempAccountClasses" entry="tempAccountClass">
                 <if condition="ancestorClassEnumIdSet.contains(tempAccountClass)">
                     <set field="entityValue.isTemporary" value="Y"/><break/></if>
@@ -222,9 +228,13 @@ along with this software (see the LICENSE.md file). If not, see
                 <service-call name="mantle.ledger.LedgerServices.find#RootGlAccountClassEnum" out-map="context"
                         in-map="[glAccountClassEnumId:glAccount.glAccountClassEnumId]"/>
 
-                <set field="glAccount.isDebit" from="'DEBIT'.equals(rootGlAccountClassEnumId) ? 'Y' : 'N'"/>
+                <if condition="isContra == 'Y'"><then>
+                    <set field="entityValue.isDebit" from="'DEBIT'.equals(rootGlAccountClassEnumId) ? 'N' : 'Y'"/>
+                </then><else>
+                    <set field="entityValue.isDebit" from="'DEBIT'.equals(rootGlAccountClassEnumId) ? 'Y' : 'N'"/>
+                </else></if>
                 <set field="glAccount.isTemporary" value="N"/>
-                <set field="tempAccountClasses" from="['REVENUE', 'CONTRA_REVENUE', 'COST_OF_SALES', 'INCOME', 'EXPENSE', 'NON_OP_EXPENSE']"/>
+                <set field="tempAccountClasses" from="['REVENUE', 'COST_OF_SALES', 'INCOME', 'EXPENSE', 'NON_OP_EXPENSE']"/>
                 <iterate list="tempAccountClasses" entry="tempAccountClass">
                     <if condition="ancestorClassEnumIdSet.contains(tempAccountClass)">
                         <set field="glAccount.isTemporary" value="Y"/><break/></if>
@@ -291,8 +301,8 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="get" noun="DefaultGlAccountByType">
         <in-parameters>
             <parameter name="glAccountTypeEnumId" required="true"/>
-            <!-- <parameter name="acctgTransTypeEnumId" required="true"/> -->
             <parameter name="organizationPartyId" required="true"/>
+            <!-- <parameter name="acctgTransTypeEnumId" required="true"/> -->
             <!-- <parameter name="otherPartyId"/> -->
         </in-parameters>
         <out-parameters>
@@ -460,13 +470,13 @@ along with this software (see the LICENSE.md file). If not, see
                 <econdition field-name="acctgTransId"/>
                 <order-by field-name="acctgTransEntrySeqId"/>
             </entity-find>
-            <set field="debitTotal" from="0"/>
-            <set field="creditTotal" from="0"/>
+            <set field="debitTotal" from="0.0"/>
+            <set field="creditTotal" from="0.0"/>
             <iterate entry="acctgTransEntry" list="acctgTransEntryList">
                 <if condition="acctgTransEntry.debitCreditFlag == 'D'"><then>
-                    <set field="debitTotal" from="debitTotal + acctgTransEntry.amount"/>
+                    <set field="debitTotal" from="debitTotal + (acctgTransEntry.amount ?: 0.0)"/>
                 </then><else>
-                    <set field="creditTotal" from="creditTotal + acctgTransEntry.amount"/>
+                    <set field="creditTotal" from="creditTotal + (acctgTransEntry.amount ?: 0.0)"/>
                 </else></if>
             </iterate>
 
@@ -1158,9 +1168,9 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <actions>
             <entity-find-one entity-name="mantle.party.time.TimePeriod" value-field="timePeriod" for-update="true"/>
-            <!-- FUTURE: instead of using Java system default TimeZone use one configured for the organization -->
-            <set field="fromTimestamp" from="ec.l10n.parseTimestamp(timePeriod.fromDate.toString() + ' 00:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
-            <set field="thruTimestamp" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 23:59:59.999', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
+            <service-call name="mantle.party.TimeServices.get#TimePeriodInfo" in-map="[timePeriod:timePeriod]" out-map="periodInfo"/>
+            <set field="fromTimestamp" from="periodInfo.fromTimestamp"/>
+            <set field="thruTimestamp" from="periodInfo.thruTimestamp"/>
 
             <log message="Closing period ${timePeriodId} ${timePeriod.periodName}"/>
 
@@ -1222,14 +1232,12 @@ along with this software (see the LICENSE.md file). If not, see
         <in-parameters><parameter name="timePeriodId" required="true"/></in-parameters>
         <actions>
             <entity-find-one entity-name="mantle.party.time.TimePeriod" value-field="timePeriod" for-update="true"/>
-            <!-- FUTURE: instead of using Java system default TimeZone use one configured for the organization -->
-            <set field="fromTimestamp" from="ec.l10n.parseTimestamp(timePeriod.fromDate.toString() + ' 00:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
-            <set field="thruTimestamp" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 23:59:59.999', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
+            <service-call name="mantle.party.TimeServices.get#TimePeriodInfo" in-map="[timePeriod:timePeriod]" out-map="periodInfo"/>
+            <set field="fromTimestamp" from="periodInfo.fromTimestamp"/>
+            <set field="thruTimestamp" from="periodInfo.thruTimestamp"/>
 
-            <!-- get or create the next TimePeriod (gets nextTimePeriodId, nextTimePeriod); always set its begin balance
-                from this period's end balance -->
-            <service-call name="mantle.party.TimeServices.getOrCreate#NextTimePeriod" out-map="context"
-                    in-map="[timePeriodId:timePeriodId]"/>
+            <!-- get or create the next TimePeriod (gets nextTimePeriodId, nextTimePeriod); always set its begin balance from this period's end balance -->
+            <service-call name="mantle.party.TimeServices.getOrCreate#NextTimePeriod" out-map="context" in-map="[timePeriodId:timePeriodId]"/>
 
             <!-- get any existing subsequent time periods to update those as well (unlike next get only, no create) -->
             <set field="subsequentPeriodIds" from="[nextTimePeriodId]"/>
@@ -1370,11 +1378,11 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <out-parameters><parameter name="acctgTransIdByClassId" type="Map"/></out-parameters>
         <actions>
-            <entity-find-one entity-name="mantle.party.time.TimePeriod" value-field="timePeriod"/>
+            <entity-find-one entity-name="mantle.party.time.TimePeriod" value-field="timePeriod" for-update="true"/>
             <set field="organizationPartyId" from="timePeriod.partyId"/>
-            <!-- FUTURE: instead of using Java system default TimeZone use one configured for the organization -->
-            <set field="transactionDate" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 20:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
-            <if condition="ec.user.nowTimestamp &lt; transactionDate"><message>Fiscal period ${timePeriodId} has not yet ended (ends on ${timePeriod.thruDate})</message></if>
+            <service-call name="mantle.party.TimeServices.get#TimePeriodInfo" in-map="[timePeriod:timePeriod]" out-map="periodInfo"/>
+            <set field="transactionDate" from="periodInfo.thruTimestampLate"/>
+            <if condition="ec.user.nowTimestamp &lt; periodInfo.thruTimestamp"><message>Fiscal period ${timePeriodId} has not yet ended (ends on ${timePeriod.thruDate})</message></if>
             <if condition="timePeriod.isClosed != 'Y'"><message>Fiscal period ${timePeriodId} is not yet closed, Period Closing transactions may be posted after a period is closed and posting period close transactions before a period is closed may result in non-zero balances, requiring another closing transaction</message></if>
 
             <if condition="!netIncomeGlAccountId">
@@ -1387,7 +1395,7 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="!netIncomeGlAccountId"><return error="true" message="No Net Income account specified or found by class"/></if>
 
             <set field="acctgTransIdByClassId" from="[:]"/>
-            <set field="tempAccountClasses" from="['REVENUE', 'CONTRA_REVENUE', 'COST_OF_SALES', 'INCOME', 'EXPENSE', 'NON_OP_EXPENSE']"/>
+            <set field="tempAccountClasses" from="['REVENUE', 'COST_OF_SALES', 'EXPENSE', 'INCOME', 'NON_OP_EXPENSE']"/>
             <iterate list="tempAccountClasses" entry="tempAccountClass">
                 <entity-find-one entity-name="moqui.basic.Enumeration" value-field="classEnum" cache="true">
                     <field-map field-name="enumId" from="tempAccountClass"/></entity-find-one>
@@ -1397,6 +1405,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <service-call name="mantle.ledger.LedgerServices.find#RootGlAccountClassEnum" out-map="rootEnumOut"
                         in-map="[glAccountClassEnumId:classEnum.parentEnumId]"/>
                 <set field="isDebit" from="'DEBIT'.equals(rootEnumOut.rootGlAccountClassEnumId)"/>
+                <if condition="rootEnumOut.isContra == 'Y'"><set field="isDebit" from="!isDebit"/></if>
 
                 <set field="balanceTotal" from="0.0"/>
                 <entity-find entity-name="mantle.ledger.report.GlAccountOrgTimePeriodDetail" list="glAccountDetailList">
@@ -1596,9 +1605,10 @@ along with this software (see the LICENSE.md file). If not, see
 
                 <set field="timePeriodId" from="timePeriod.timePeriodId"/>
                 <set field="organizationPartyId" from="timePeriod.partyId"/>
-                <!-- FUTURE: instead of using Java system default TimeZone use one configured for the organization -->
-                <set field="fromTimestamp" from="ec.l10n.parseTimestamp(timePeriod.fromDate.toString() + ' 00:00:00.000', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
-                <set field="thruTimestamp" from="ec.l10n.parseTimestamp(timePeriod.thruDate.toString() + ' 23:59:59.999', 'yyyy-MM-dd HH:mm:ss.SSS', null, TimeZone.getDefault())"/>
+
+                <service-call name="mantle.party.TimeServices.get#TimePeriodInfo" in-map="[timePeriod:timePeriod]" out-map="periodInfo"/>
+                <set field="fromTimestamp" from="periodInfo.fromTimestamp"/>
+                <set field="thruTimestamp" from="periodInfo.thruTimestamp"/>
 
                 <!-- get or create the next TimePeriod (gets nextTimePeriodId, nextTimePeriod); always set its begin balance
                     from this period's end balance -->

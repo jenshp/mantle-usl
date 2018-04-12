@@ -661,6 +661,24 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
 
+    <service verb="checkSet" noun="ShipmentDeliveredByPackages">
+        <in-parameters><parameter name="shipmentId"/></in-parameters>
+        <actions>
+            <!-- see if all packages are delivered, if so update Shipment status to ShipDelivered (if statusId in ShipPacked, ShipShipped) -->
+            <entity-find-one entity-name="mantle.shipment.Shipment" value-field="shipment"/>
+            <if condition="shipment.statusId in ['ShipPacked', 'ShipShipped']">
+                <entity-find entity-name="mantle.shipment.ShipmentPackageRouteSeg" list="checkSprsList">
+                    <econdition field-name="shipmentId"/></entity-find>
+                <set field="foundNotDelivered" from="false"/>
+                <iterate list="checkSprsList" entry="checkSprs"><if condition="checkSprs.trackingStatusEnumId != 'ShTsDelivered'">
+                    <set field="foundNotDelivered" from="true"/></if></iterate>
+                <if condition="checkSprsList &amp;&amp; !foundNotDelivered">
+                    <service-call name="update#mantle.shipment.Shipment" in-map="[shipmentId:shipment.shipmentId, statusId:'ShipDelivered']"/>
+                </if>
+            </if>
+        </actions>
+    </service>
+
     <!-- ============================================= -->
     <!-- ========== Order Shipment Services ========== -->
     <!-- ============================================= -->
@@ -719,6 +737,8 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"/>
             <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart"/>
+            <if condition="!(orderPart.statusId in ['OrderApproved', 'OrderSent'] || orderHeader.statusId in ['OrderApproved', 'OrderSent'])">
+                <return error="true" message="Cannot create Shipment for Order Part in status ${orderPart.statusId}"/></if>
 
             <!-- does the OrderPart have shippable items? -->
             <entity-find-related value-field="orderPart" relationship-name="mantle.order.OrderItem" list="orderItemList"
@@ -745,7 +765,8 @@ along with this software (see the LICENSE.md file). If not, see
             <service-call name="create#mantle.shipment.Shipment" out-map="context"
                     in-map="[shipmentTypeEnumId:shipmentTypeEnumId, statusId:'ShipInput', entryDate:ec.user.nowTimestamp,
                         fromPartyId:orderPart.vendorPartyId, toPartyId:orderPart.customerPartyId,
-                        systemMessageRemoteId:orderHeader.systemMessageRemoteId, handlingInstructions:orderPart.shippingInstructions]"/>
+                        systemMessageRemoteId:orderHeader.systemMessageRemoteId, handlingInstructions:orderPart.shippingInstructions,
+                        otherPartyOrderId:orderPart.otherPartyOrderId]"/>
 
             <if condition="createRouteSegment">
                 <service-call name="create#mantle.shipment.ShipmentRouteSegment" out-map="context"
@@ -779,7 +800,13 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="shipmentId" required="true"/>
         </in-parameters>
         <actions>
+            <entity-find-one entity-name="mantle.shipment.Shipment" value-field="shipment"/>
+            <if condition="!(shipment.statusId in ['ShipInput', 'ShipScheduled', 'ShipPicked'])">
+                <return error="true" message="Cannot add Order Part to Shipment in status ${shipment.statusId}"/></if>
+
             <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart"/>
+            <if condition="!(orderPart.statusId in ['OrderApproved', 'OrderSent'])">
+                <return error="true" message="Cannot add Order Part in status ${orderPart.statusId} to Shipment"/></if>
 
             <!-- for each OrderItem in the part create ShipmentItem and ShipmentItemSource records -->
             <entity-find-related value-field="orderPart" relationship-name="mantle.order.OrderItem" list="orderItemList"
@@ -1303,16 +1330,30 @@ along with this software (see the LICENSE.md file). If not, see
             <order-map-list list="productInfoList"><order-by field-name="${productOrderBy}"/></order-map-list>
 
             <set field="orderedQuantityByProductId" from="[:]"/>
+            <set field="otherPartyProductIdByProductId" from="[:]"/>
             <set field="shippedQuantityByProductId" from="[:]"/>
             <if condition="orderIdSet">
+                <entity-find entity-name="moqui.basic.EnumGroupMember" list="productItemTypeEgms" cache="true">
+                    <econdition field-name="enumGroupEnumId" value="EngItemsProduct"/></entity-find>
+                <set field="productItemTypes" from="productItemTypeEgms*.enumId"/>
                 <!-- get total quantity ordered by product across all orders in shipment -->
                 <entity-find entity-name="mantle.order.OrderItemSummary" list="orderItemSummaryList">
                     <econdition field-name="orderId" operator="in" from="orderIdSet"/>
                     <econdition field-name="productId" operator="is-not-null"/>
+                    <econdition field-name="itemTypeEnumId" operator="in" from="productItemTypes"/>
                     <select-field field-name="productId,quantity"/>
                 </entity-find>
                 <iterate list="orderItemSummaryList" entry="oiSummary">
                     <script>orderedQuantityByProductId.put(oiSummary.productId, oiSummary.quantity)</script></iterate>
+
+                <entity-find entity-name="mantle.order.OrderItem" list="orderItemProductIdList">
+                    <econdition field-name="orderId" operator="in" from="orderIdSet"/>
+                    <econdition field-name="productId" operator="is-not-null"/>
+                    <econdition field-name="otherPartyProductId" operator="is-not-null"/>
+                    <select-field field-name="productId,otherPartyProductId"/>
+                </entity-find>
+                <iterate list="orderItemProductIdList" entry="orderItem">
+                    <script>otherPartyProductIdByProductId.put(orderItem.productId, orderItem.otherPartyProductId)</script></iterate>
 
                 <!-- get total quantity shipped across all orders in shipment (including this one) -->
                 <entity-find entity-name="mantle.shipment.ShipmentItemSourceSummary" list="sisSummaryList">
@@ -1341,6 +1382,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <set field="productInfo" from="productInfoMap.get(packageContent.productId)"/>
                     <script>contentInfoList.add([packageContent:packageContent, productInfo:productInfo,
                             quantityOrdered:orderedQuantityByProductId.get(packageContent.productId),
+                            otherPartyProductId:otherPartyProductIdByProductId.get(packageContent.productId),
                             quantityShipped:shippedQuantityByProductId.get(packageContent.productId)])</script>
                 </iterate>
                 <script>packageInfoList.add([shipmentPackage:shipmentPackage, shipmentBoxType:shipmentBoxType, weightUom:weightUom,
@@ -1504,7 +1546,8 @@ along with this software (see the LICENSE.md file). If not, see
                 <set field="shipmentItemSource.statusId" value="SisPacked"/></if>
             <entity-update value-field="shipmentItemSource"/>
 
-            <!-- on Shipment Item Packed mark Order as Completed (IF all order part items are completed) -->
+            <!-- NOTE don't mark order complete here, wait until Shipment goes to Packed status to avoid issues with unpack and order remaining completed:
+            <!- - on Shipment Item Packed mark Order as Completed (IF all order part items are completed) - ->
             <if condition="shipmentItemSource.orderId &amp;&amp; shipmentItemSource.orderItemSeqId">
                 <entity-find-one entity-name="mantle.order.OrderItem" value-field="orderItem">
                     <field-map field-name="orderId" from="shipmentItemSource.orderId"/>
@@ -1513,6 +1556,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <service-call name="mantle.order.OrderServices.checkComplete#OrderPart"
                         in-map="[orderId:orderItem.orderId, orderPartSeqId:orderItem.orderPartSeqId]"/>
             </if>
+            -->
         </actions>
     </service>
 
@@ -1751,6 +1795,8 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="shipmentRouteSegmentSeqId"/>
             <parameter name="shipmentPackageSeqId"/>
             <parameter name="makeDefaultPrinter" type="Boolean" default="false"/>
+            <parameter name="returnLabels" type="Boolean" default="false">
+                <description>Print return labels instead of standard/outgoing labels</description></parameter>
         </in-parameters>
         <out-parameters>
             <parameter name="printJobIdList" type="List"><parameter name="printJobId"/></parameter>
@@ -1766,10 +1812,10 @@ along with this software (see the LICENSE.md file). If not, see
                 <econdition field-name="shipmentPackageSeqId" ignore-if-empty="true"/>
             </entity-find>
             <iterate list="packageRouteSegList" entry="packageRouteSeg">
-                <set field="labelUrl" from="packageRouteSeg.labelUrl"/>
-                <set field="labelImage" from="packageRouteSeg.getSerialBlob('labelImage')"/>
+                <set field="labelUrl" from="returnLabels ? packageRouteSeg.returnLabelUrl : packageRouteSeg.labelUrl"/>
+                <set field="labelImage" from="returnLabels ? packageRouteSeg.getSerialBlob('returnLabelImage') : packageRouteSeg.getSerialBlob('labelImage')"/>
                 <if condition="!labelUrl &amp;&amp; labelImage == null">
-                    <message>Package ${packageRouteSeg.shipmentPackageSeqId} route segment ${packageRouteSeg.shipmentRouteSegmentSeqId} has no label URL or image</message>
+                    <message>Package ${packageRouteSeg.shipmentPackageSeqId} route segment ${packageRouteSeg.shipmentRouteSegmentSeqId} has no ${returnLabels ? 'return' : 'outgoing'} label URL or image</message>
                     <continue/>
                 </if>
                 <!-- get label binary from URL -->
@@ -1826,6 +1872,22 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="packedDate" from="packedDate ?: shipment.estimatedShipDate ?: ec.user.nowTimestamp"/>
             <service-call name="update#mantle.shipment.Shipment" out-map="context"
                     in-map="[shipmentId:shipmentId, statusId:'ShipPacked', packedDate:packedDate]"/>
+
+            <!-- on Shipment Item Packed mark Order as Completed (IF all order part items are completed) -->
+            <entity-find entity-name="mantle.shipment.ShipmentItemSource" list="sisOrderList" distinct="true">
+                <econdition field-name="shipmentId"/>
+                <select-field field-name="orderId,orderItemSeqId"/>
+            </entity-find>
+            <iterate list="sisOrderList" entry="shipmentItemSource">
+                <if condition="shipmentItemSource.orderId &amp;&amp; shipmentItemSource.orderItemSeqId">
+                    <entity-find-one entity-name="mantle.order.OrderItem" value-field="orderItem">
+                        <field-map field-name="orderId" from="shipmentItemSource.orderId"/>
+                        <field-map field-name="orderItemSeqId" from="shipmentItemSource.orderItemSeqId"/>
+                    </entity-find-one>
+                    <service-call name="mantle.order.OrderServices.checkComplete#OrderPart"
+                            in-map="[orderId:orderItem.orderId, orderPartSeqId:orderItem.orderPartSeqId]"/>
+                </if>
+            </iterate>
         </actions>
     </service>
     <service verb="ship" noun="Shipment">
@@ -1920,9 +1982,10 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <actions>
             <entity-find entity-name="mantle.shipment.ShipmentItemSource" list="shipmentItemSourceList" distinct="true">
-                <econdition field-name="shipmentId"/><select-field field-name="orderId"/></entity-find>
+                <econdition field-name="shipmentId"/><select-field field-name="orderId,invoiceId"/></entity-find>
             <set field="orderIdSet" from="new HashSet(shipmentItemSourceList*.orderId)"/>
-            <script>orderIdSet.remove(null)</script>
+            <set field="invoiceIdSet" from="new HashSet(shipmentItemSourceList*.invoiceId)"/>
+            <script>orderIdSet.remove(null); invoiceIdSet.remove(null)</script>
             <if condition="!orderIdSet"><return/></if>
 
             <entity-find entity-name="mantle.order.OrderHeader" list="orderHeaderList">
@@ -1949,6 +2012,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <econdition field-name="partyId" from="toPartyId"/></entity-find>
                     <if condition="userAccountList"><set field="toUserId" from="userAccountList[0].userId"/></if>
                 </if>
+                <if condition="!toAddresses"><return/></if>
 
                 <!-- send email for each configured -->
                 <iterate list="storeEmailList" entry="storeEmail">
@@ -1956,6 +2020,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <field-map field-name="productStoreId" from="storeEmail.productStoreId"/></entity-find-one>
                     <!-- simple bodyParameters, let the screen do data prep -->
                     <set field="bodyParameters" from="[shipmentId:shipmentId, orderIdSet:new TreeSet(orderIdSet),
+                        invoiceId:(invoiceIdSet ? invoiceIdSet.first() : null),
                         storeDomain:productStore.storeDomain, profileUrlPath:productStore.profileUrlPath,
                         headerImagePath:storeEmail.headerImagePath, detailLinkPath:storeEmail.detailLinkPath]"/>
 

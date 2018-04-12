@@ -31,6 +31,8 @@ along with this software (see the LICENSE.md file). If not, see
                 <auto-parameters entity-name="mantle.order.OrderItem"/></parameter></parameter>
             <parameter name="allItemsAuditLogList" type="List"><parameter name="orderItem" type="Map"/></parameter>
             <parameter name="orderItemWithChildrenSet" type="Set"><parameter name="orderItemSeqId"/></parameter>
+
+            <parameter name="orderPromoCodeDetailList" type="List"><parameter name="orderPromoCode" type="Map"/></parameter>
             <parameter name="paymentList" type="List"><parameter name="payment" type="Map">
                 <auto-parameters entity-name="mantle.account.payment.Payment"/></parameter></parameter>
 
@@ -173,6 +175,10 @@ along with this software (see the LICENSE.md file). If not, see
                 <order-by field-name="-changedDate"/>
             </entity-find>
 
+            <!-- get orderPromoCodeDetailList -->
+            <entity-find entity-name="mantle.product.store.OrderPromoCodeDetail" list="orderPromoCodeDetailList">
+                <econdition field-name="orderId"/></entity-find>
+            <!-- get paymentList -->
             <entity-find-related value-field="orderHeader" relationship-name="mantle.account.payment.Payment"
                     list="paymentList" order-by-list="['paymentId']"/>
 
@@ -287,7 +293,7 @@ along with this software (see the LICENSE.md file). If not, see
                 def partPaymentInfoList = []
                 BigDecimal paymentsTotal = 0
                 for (EntityValue partPayment in partPaymentList) {
-                    if (!(((String) partPayment.statusId) in ['PmntCancelled', 'PmntVoid', 'PmntDeclined', 'PmntRefunded']))
+                    if (!(((String) partPayment.statusId) in ['PmntCancelled', 'PmntVoid', 'PmntDeclined']))
                         paymentsTotal += (partPayment.amount ?: 0)
                     Map partPaymentInfo = [partPayment:partPayment, statusItem:partPayment.status]
                     EntityValue paymentMethod = (EntityValue) partPayment.method
@@ -378,10 +384,13 @@ along with this software (see the LICENSE.md file). If not, see
         <in-parameters><parameter name="orderId"/></in-parameters>
         <out-parameters><parameter name="itemCount" type="BigDecimal"/></out-parameters>
         <actions>
+            <entity-find entity-name="moqui.basic.EnumGroupMember" list="productItemTypeEgms" cache="true">
+                <econdition field-name="enumGroupEnumId" value="EngItemsProduct"/></entity-find>
+            <set field="productItemTypes" from="productItemTypeEgms*.enumId"/>
             <set field="itemCount" from="0.0"/>
             <entity-find entity-name="mantle.order.OrderItem" list="orderItemList"><econdition field-name="orderId"/></entity-find>
             <iterate list="orderItemList" entry="orderItem">
-                <if condition="orderItem.itemTypeEnumId != 'ItemProduct'"><continue/></if>
+                <if condition="!(orderItem.itemTypeEnumId in productItemTypes)"><continue/></if>
                 <set field="itemCount" from="itemCount + orderItem.quantity"/>
             </iterate>
         </actions>
@@ -425,12 +434,12 @@ along with this software (see the LICENSE.md file). If not, see
                     <set field="totalPromised" from="totalPromised + (payment.amount ?: 0.0)"/>
                 </else-if></if>
                 <if condition="payment.amountUomId != orderHeader.currencyUomId">
-                    <script>approveWarnings.add(ec.resource.expand('Payment currency ${payment.amountUomId} is different from order currency ${orderHeader.currencyUomId}', null))</script></if>
+                    <script>approveWarnings.add(ec.resource.expand('OrderApproveCurrencyDifferent', null))</script></if>
             </iterate>
             <if condition="totalPromised &lt; orderHeader.grandTotal">
-                <script>approveWarnings.add(ec.resource.expand('Total promised or later payment total ${ec.l10n.formatCurrency(totalPromised, orderHeader.currencyUomId)} is less than order total ${ec.l10n.formatCurrency(orderHeader.grandTotal, orderHeader.currencyUomId)}', null))</script></if>
+                <script>approveWarnings.add(ec.resource.expand('OrderApprovePaymentPromisedLow', null))</script></if>
             <if condition="totalAuthorized &lt; orderHeader.grandTotal">
-                <script>approveWarnings.add(ec.resource.expand('Total authorized or later payment total ${ec.l10n.formatCurrency(totalAuthorized, orderHeader.currencyUomId)} is less than order total ${ec.l10n.formatCurrency(orderHeader.grandTotal, orderHeader.currencyUomId)}', null))</script></if>
+                <script>approveWarnings.add(ec.resource.expand('OrderApprovePaymentAuthorizedLow', null))</script></if>
 
             <!-- don't go beyond here if there is no customer or vendor -->
             <set field="noCustomerOrVendor" from="false"/>
@@ -609,8 +618,8 @@ along with this software (see the LICENSE.md file). If not, see
                         <econdition field-name="productId" operator="in" from="productIdSet"/>
                         <select-field field-name="productId,quantity"/>
                     </entity-find>
-                    <iterate list="nearItemList" entry="nearItem"><script>approveWarnings.add(ec.resource.expand(
-                        'Found similar order ${nearOrder.orderId}:${nearOrder.orderPartSeqId} placed ${ec.l10n.format(nearOrder.placedDate, null)} (${ec.l10n.format(diffHours, "0.0")}h ${isFuture ? "after" : "before"}) with ${ec.l10n.format(nearItem.quantity, "0.##")} of product ${nearItem.productId}', null))</script></iterate>
+                    <iterate list="nearItemList" entry="nearItem">
+                        <script>approveWarnings.add(ec.resource.expand('OrderApproveNearOrder', null))</script></iterate>
                 </iterate>
 
                 <!-- price min/max compare, for each product with min/max prices -->
@@ -702,12 +711,23 @@ along with this software (see the LICENSE.md file). If not, see
 
                 <!-- send email for each configured -->
                 <iterate list="storeEmailList" entry="storeEmail">
+                    <if condition="!storeEmail.emailTemplateId"><continue/></if>
+
+                    <!-- if email has already been sent (by orderId, emailTypeEnumId) don't send again -->
+                    <entity-find entity-name="mantle.order.OrderEmailMessageDetail" list="existingMessages">
+                        <econdition field-name="orderId"/><econdition field-name="emailTypeEnumId"/>
+                        <select-field field-name="emailMessageId"/>
+                    </entity-find>
+                    <if condition="existingMessages">
+                        <log message="Not sending ${emailTypeEnumId} email for order ${orderId}, found messages: ${existingMessages*.emailMessageId}"/>
+                        <continue/>
+                    </if>
+
                     <!-- simple bodyParameters, let the screen do data prep -->
                     <set field="bodyParameters" from="[orderId:orderId, storeDomain:productStore.storeDomain,
                         profileUrlPath:productStore.profileUrlPath, headerImagePath:storeEmail.headerImagePath,
                         detailLinkPath:storeEmail.detailLinkPath]"/>
 
-                    <if condition="!storeEmail.emailTemplateId"><continue/></if>
                     <service-call name="org.moqui.impl.EmailServices.send#EmailTemplate" out-map="sendOut" out-map-add-to-existing="false"
                             in-map="[emailTemplateId:storeEmail.emailTemplateId, emailTypeEnumId:emailTypeEnumId,
                                 toAddresses:toAddresses, bodyParameters:bodyParameters, toUserId:toUserId]"/>

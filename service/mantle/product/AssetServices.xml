@@ -18,6 +18,7 @@ along with this software (see the LICENSE.md file). If not, see
         <in-parameters><parameter name="assetId"/></in-parameters>
         <out-parameters>
             <parameter name="asset" type="EntityValue"/>
+            <parameter name="isFixedAsset" type="Boolean"/>
             <parameter name="statusItem" type="EntityValue"/>
             <parameter name="statusId"/>
             <parameter name="statusHistoryList" type="EntityList"><parameter name="auditLog" type="EntityValue"/></parameter>
@@ -31,6 +32,8 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <entity-find-one entity-name="mantle.product.asset.Asset" value-field="asset"/>
             <if condition="asset == null"><return error="true" message="Asset not found with ID ${assetId}"/></if>
+
+            <set field="isFixedAsset" from="!(asset.assetTypeEnumId in ['AstTpInventory', 'AstTpSupplies'])"/>
 
             <set field="statusItem" from="asset.'Asset#moqui.basic.StatusItem'"/>
             <entity-find entity-name="moqui.entity.EntityAuditLog" list="statusHistoryList">
@@ -202,6 +205,10 @@ along with this software (see the LICENSE.md file). If not, see
             <!-- first check the OrderItem, make sure we have a productId otherwise don't reserve -->
             <set field="productId" from="orderItem.productId"/>
             <if condition="!productId"><return/></if>
+
+            <!-- see if Product is a physical item -->
+            <entity-find-one entity-name="mantle.product.Product" value-field="product" cache="true"/>
+            <if condition="!(product.productTypeEnumId in ['PtAsset', 'PtDigitalAsset', 'PtAssetUse'])"><return/></if>
 
             <entity-find-one entity-name="mantle.order.OrderHeader" value-field="orderHeader"/>
             <entity-find-related-one value-field="orderItem" relationship-name="mantle.order.OrderPart" to-value-field="orderPart"/>
@@ -401,6 +408,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <econdition field-name="assetId" operator="not-in" from="explicitAssetIdList" ignore-if-empty="true"/>
                     <econdition field-name="assetId" operator="not-in" from="skipAssetIds" ignore-if-empty="true"/>
                     <econdition field-name="lotId" operator="in" from="lotsToUse" ignore-if-empty="true"/>
+                    <econdition field-name="statusId" value="AstAvailable"/>
                     <order-by field-name="${assetOrderBy},assetId"/>
                 </entity-find>
                 <iterate list="checkAssetList" entry="checkAsset">
@@ -710,7 +718,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <if condition="resQuantityRemaining == 0.0"><break/></if>
                     <set field="curMoveQuantity" from="resQuantityRemaining &gt; resToMove.quantityNotIssued ? resToMove.quantityNotIssued : resQuantityRemaining"/>
 
-                    <service-call name="mantle.product.AssetServices.reduce#AssetReservation" out-map="reduceArOut"
+                    <service-call name="mantle.product.AssetServices.reduce#AssetReservation" out-map="reduceArOut" out-map-add-to-existing="false"
                             in-map="[assetReservationId:resToMove.assetReservationId, quantityToDeduct:curMoveQuantity]"/>
 
                     <service-call name="mantle.product.AssetServices.reserve#AssetForOrderItem"
@@ -747,7 +755,8 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="change" noun="AssetQuantity" no-tx-cache="true">
         <in-parameters>
-            <auto-parameters entity-name="mantle.product.asset.AssetDetail" include="nonpk"/>
+            <auto-parameters entity-name="mantle.product.asset.AssetDetail" include="nonpk">
+                <exclude field-name="quantityOnHandDiff"/><exclude field-name="availableToPromiseDiff"/></auto-parameters>
             <parameter name="assetId" required="true"/>
             <parameter name="quantityDiff" type="BigDecimal" required="true"/>
             <parameter name="effectiveDate" type="Timestamp" default="ec.user.nowTimestamp"/>
@@ -763,7 +772,7 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="quantityDiff &gt; 0.0 &amp;&amp; asset.productId">
                 <service-call name="mantle.product.AssetServices.reserve#IncreasedAsset" in-map="[assetId:assetId]"/></if>
 
-            <!-- on decrease adjust reservations down (increase quantityNotAvailable); -->
+            <!-- on decrease adjust reservations down and re-reserve -->
             <if condition="quantityDiff &lt; 0.0 &amp;&amp; asset.productId">
                 <entity-find-one entity-name="mantle.product.asset.Asset" value-field="asset" for-update="true">
                     <field-map field-name="assetId"/></entity-find-one>
@@ -778,14 +787,24 @@ along with this software (see the LICENSE.md file). If not, see
                         <order-by field-name="-reservedDate"/><!-- get most recent first for reducing reservation quantities -->
                     </entity-find>
                     <iterate list="existingResList" entry="res">
-                        <set field="quantityAvailable" from="res.quantity - res.quantityNotAvailable"/>
-                        <set field="quantityToReduce" from="quantityAvailable &gt; reduceQuantityRemaining ? reduceQuantityRemaining : quantityAvailable"/>
+                        <if condition="reduceQuantityRemaining == 0.0"><break/></if>
 
+                        <!-- don't just adjust quantityNotAvailable, try to re-reserve against other assets:
+                        <set field="quantityAvailable" from="res.quantity - (res.quantityNotAvailable ?: 0.0)"/>
+                        <set field="quantityToReduce" from="quantityAvailable &gt; reduceQuantityRemaining ? reduceQuantityRemaining : quantityAvailable"/>
                         <set field="res.quantityNotAvailable" from="res.quantityNotAvailable + quantityToReduce"/>
                         <entity-update value-field="res"/>
-
                         <set field="reduceQuantityRemaining" from="reduceQuantityRemaining - quantityToReduce"/>
-                        <if condition="reduceQuantityRemaining == 0"><break/></if>
+                        -->
+
+                        <set field="quantityToReduce" from="reduceQuantityRemaining &gt; res.quantityNotIssued ? res.quantityNotIssued : reduceQuantityRemaining"/>
+
+                        <service-call name="mantle.product.AssetServices.reduce#AssetReservation" out-map="reduceArOut" out-map-add-to-existing="false"
+                                in-map="[assetReservationId:res.assetReservationId, quantityToDeduct:quantityToReduce]"/>
+                        <service-call name="mantle.product.AssetServices.reserve#AssetForOrderItem"
+                                in-map="[orderId:res.orderId, orderItemSeqId:res.orderItemSeqId, skipAssetIds:[assetId]]"/>
+
+                        <set field="reduceQuantityRemaining" from="reduceQuantityRemaining - reduceArOut.quantityDeducted"/>
                     </iterate>
                     <!-- now that quantityNotAvailable is updated see if we can reserve those on other assets -->
                     <service-call name="mantle.product.AssetServices.checkReserve#ProductAssets" in-map="[productId:asset.productId]"/>
@@ -1388,8 +1407,8 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="!assetReceiptId"><return error="true" message="Cannot update Asset and Receipt, could not find AssetReceipt record for assetId [${assetId}], shipmentId [${shipmentId}]"/></if>
 
             <!-- calculate the quantityAccepted difference, will be set in quantityOnHandDiff and availableToPromiseDiff -->
-            <set field="quantityDiff" from="(quantityAccepted ?: originalAssetReceipt.quantityAccepted) - originalAssetReceipt.quantityAccepted"/>
-            <set field="quantityRejectedDiff" from="(quantityRejected ?: originalAssetReceipt.quantityRejected) - originalAssetReceipt.quantityRejected"/>
+            <set field="quantityDiff" from="(quantityAccepted != null ? quantityAccepted : originalAssetReceipt.quantityAccepted) - originalAssetReceipt.quantityAccepted"/>
+            <set field="quantityRejectedDiff" from="(quantityRejected != null ? quantityRejected : originalAssetReceipt.quantityRejected) - originalAssetReceipt.quantityRejected"/>
 
             <!-- <log level="warn" message="======= quantityAccepted ${quantityAccepted}, quantityRejected ${quantityRejected}, quantityDiff ${quantityDiff}, originalAssetReceipt: ${originalAssetReceipt}"/> -->
 
@@ -1506,11 +1525,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <if condition="quantity &gt; asset.quantityOnHandTotal">
                     <return error="true" message="Move quantity ${quantity?.toPlainString()} is greater than on hand quantity ${asset.quantityOnHandTotal?.toPlainString()}"/></if>
                 <if condition="quantity &gt; asset.availableToPromiseTotal">
-                    <if condition="facilityId != asset.facilityId"><then>
-                        <return error="true" message="Tried to move to different facility but move quantity ${quantity?.toPlainString()} is greater than available quantity ${asset.availableToPromiseTotal?.toPlainString()}"/>
-                    </then><else>
-                        <message>Warning: move quantity ${quantity?.toPlainString()} is greater than available quantity ${asset.availableToPromiseTotal?.toPlainString()}</message>
-                    </else></if>
+                    <message>Warning: move quantity ${quantity?.toPlainString()} is greater than available quantity ${asset.availableToPromiseTotal?.toPlainString()}</message>
                 </if>
             </if>
 
@@ -1525,23 +1540,29 @@ along with this software (see the LICENSE.md file). If not, see
                         in-map="[assetId:newAssetId, effectiveDate:ec.user.nowTimestamp, quantityOnHandDiff:quantity,
                                  availableToPromiseDiff:quantity, productId:productId, otherAssetId:assetId]"/>
 
-                <!-- move reservations as needed -->
                 <if condition="quantity &gt; asset.availableToPromiseTotal">
-                    <set field="availableRemaining" from="quantity - asset.availableToPromiseTotal"/>
-                    <entity-find entity-name="mantle.product.issuance.AssetReservation" list="resList">
-                        <econdition field-name="assetId"/><order-by field-name="reservedDate"/></entity-find>
-                    <iterate list="resList" entry="res">
-                        <if condition="availableRemaining == 0"><break/></if>
-                        <set field="quantityToMove" from="availableRemaining &lt; res.quantity ? availableRemaining : res.quantity"/>
-                        <if condition="quantityToMove == 0"><continue/></if>
-                        <!-- make sure quantityToMove is less than res.quantityNotIssued, don't move issued quantities! -->
-                        <if condition="quantityToMove &gt; res.quantityNotIssued"><set field="quantityToMove" from="res.quantityNotIssued"/></if>
-                        <if condition="quantityToMove &gt; 0">
-                            <service-call name="mantle.product.AssetServices.move#AssetReservation" out-map="moveArOut"
-                                    in-map="[assetId:newAssetId, assetReservationId:res.assetReservationId, quantity:quantityToMove]"/>
-                            <set field="availableRemaining" from="availableRemaining - moveArOut.quantityMoved"/>
-                        </if>
-                    </iterate>
+                    <if condition="facilityId != asset.facilityId"><then>
+                        <!-- for move to a different facility displace reservations on original, don't do reservations on newAsset -->
+                        <service-call name="mantle.product.AssetServices.displace#AssetReservations"
+                                in-map="[assetId:assetId, quantity:quantity]"/>
+                    </then><else>
+                        <!-- move reservations as needed -->
+                        <set field="availableRemaining" from="quantity - asset.availableToPromiseTotal"/>
+                        <entity-find entity-name="mantle.product.issuance.AssetReservation" list="resList">
+                            <econdition field-name="assetId"/><order-by field-name="reservedDate"/></entity-find>
+                        <iterate list="resList" entry="res">
+                            <if condition="availableRemaining == 0"><break/></if>
+                            <set field="quantityToMove" from="availableRemaining &lt; res.quantity ? availableRemaining : res.quantity"/>
+                            <if condition="quantityToMove == 0"><continue/></if>
+                            <!-- make sure quantityToMove is less than res.quantityNotIssued, don't move issued quantities! -->
+                            <if condition="quantityToMove &gt; res.quantityNotIssued"><set field="quantityToMove" from="res.quantityNotIssued"/></if>
+                            <if condition="quantityToMove &gt; 0">
+                                <service-call name="mantle.product.AssetServices.move#AssetReservation" out-map="moveArOut"
+                                        in-map="[assetId:newAssetId, assetReservationId:res.assetReservationId, quantity:quantityToMove]"/>
+                                <set field="availableRemaining" from="availableRemaining - moveArOut.quantityMoved"/>
+                            </if>
+                        </iterate>
+                    </else></if>
                 </if>
 
                 <!-- reduce asset QOH/ATP by quantity -->
@@ -1705,7 +1726,7 @@ along with this software (see the LICENSE.md file). If not, see
                                 [assetId:asset.assetId, quantityDiff:-quantityDiff]"/></if>
                     <set field="quantityRemaining" from="quantityRemaining - quantityDiff"/>
                     <script>assetIdList.add(asset.assetId)</script>
-                    <if condition="quantityRemaining == 0"><break/></if>
+                    <if condition="quantityRemaining == 0.0"><break/></if>
                 </iterate>
             </else-if></if>
             <if condition="quantityRemaining != 0">
