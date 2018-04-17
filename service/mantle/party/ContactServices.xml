@@ -36,7 +36,6 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="postalAddress" type="EntityValue"/>
             <parameter name="postalAddressStateGeo" type="EntityValue"/>
             <parameter name="postalAddressCountryGeo" type="EntityValue"/>
-            <parameter name="postalAddressMunicipalityGeo" type="EntityValue"/>
             <parameter name="postalAddressGeoPoint" type="EntityValue"/>
             <parameter name="postalTrustLevelEnum" type="EntityValue"/>
             <parameter name="telecomContactMechId"/>
@@ -83,7 +82,6 @@ along with this software (see the LICENSE.md file). If not, see
                 <field-map field-name="contactMechId" from="postalContactMechId"/></entity-find-one>
             <set field="postalAddressStateGeo" from="postalAddress?.stateProvinceGeo"/>
             <set field="postalAddressCountryGeo" from="postalAddress?.countryGeo"/>
-            <set field="postalAddressMunicipalityGeo" from="postalAddress?.municipalityGeo"/>
             <set field="postalAddressGeoPoint" from="postalAddress?.geoPoint"/>
             <set field="postalTrustLevelEnum" from="postalContactMech?.trustLevel"/>
 
@@ -227,7 +225,6 @@ along with this software (see the LICENSE.md file). If not, see
                 <parameter name="postalAddress" type="EntityValue"/>
                 <parameter name="postalAddressCountryGeo" type="EntityValue"/>
                 <parameter name="postalAddressStateGeo" type="EntityValue"/>
-                <parameter name="postalAddressMunicipalityGeo" type="EntityValue"/>
                 <parameter name="postalAddressGeoPoint" type="EntityValue"/>
                 <parameter name="postalTrustLevelEnum" type="EntityValue"/>
                 <parameter name="telecomContactMechId"/>
@@ -283,7 +280,6 @@ along with this software (see the LICENSE.md file). If not, see
                         <field-map field-name="contactMechPurposeId" from="postalPcm.contactMechPurposeId"/></entity-find-one>
                     <set field="postalAddressStateGeo" from="postalAddress.stateProvinceGeo"/>
                     <set field="postalAddressCountryGeo" from="postalAddress.countryGeo"/>
-                    <set field="postalAddressMunicipalityGeo" from="postalAddress?.municipalityGeo"/>
                     <set field="postalAddressGeoPoint" from="postalAddress.geoPoint"/>
                     <set field="postalTrustLevelEnum" from="postalContactMech.trustLevel"/>
 
@@ -305,7 +301,6 @@ along with this software (see the LICENSE.md file). If not, see
                     <set field="postalAddressInfo" from="[postalContactMechId:postalContactMechId, postalContactMech:postalContactMech,
                             postalContactMechPurposeId:postalPcm.contactMechPurposeId, postalContactMechPurpose:postalContactMechPurpose,
                             postalAddress:postalAddress, postalAddressStateGeo:postalAddressStateGeo,
-                            postalAddressMunicipalityGeo:postalAddressMunicipalityGeo,
                             postalAddressCountryGeo:postalAddressCountryGeo, postalAddressGeoPoint:postalAddressGeoPoint,
                             postalTrustLevelEnum:postalTrustLevelEnum,
                             telecomContactMechId:postalTelecomContactMechId, telecomContactMech:postalTelecomContactMech, telecomNumber:postalTelecomNumber,

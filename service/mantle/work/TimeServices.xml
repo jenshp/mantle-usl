@@ -983,7 +983,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <econdition field-name="workTypeEnumId" from="workTypeEnumId" or-null="true" ignore-if-empty="true"/>
                 <econdition field-name="ratePurposeEnumId"/>
                 <econdition field-name="rateTypeEnumId"/>
-                <!-- <econdition field-name="rateCurrencyUomId" or-null="true"/> -->
+                <econdition field-name="rateCurrencyUomId" or-null="true"/>
                 <econdition field-name="timePeriodUomId"/>
             </entity-find>
 
