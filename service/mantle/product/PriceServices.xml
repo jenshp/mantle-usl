@@ -50,7 +50,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="priceTypeEnumId" required="true"/>
             <parameter name="quantity" type="BigDecimal" default="1.0"/>
             <parameter name="validDate" type="Timestamp" default="ec.user.nowTimestamp"/>
-            <parameter name="priceUomId" default-value="${ec.user.getPreference('CurrencyDefault') ?: 'USD'}"/>
+            <parameter name="priceUomId" default="ec.user.getPreference('CurrencyDefault') ?: 'USD'"/>
             <parameter name="pricePurposeEnumId" default-value="PppPurchase"/>
             <parameter name="productStoreId"/><parameter name="vendorPartyId"/><parameter name="customerPartyId"/>
         </in-parameters>
@@ -90,7 +90,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="productId" required="true"/>
             <parameter name="quantity" type="BigDecimal" default="1.0"/>
             <parameter name="validDate" type="Timestamp" default="ec.user.nowTimestamp"/>
-            <parameter name="priceUomId" default-value="${ec.user.getPreference('CurrencyDefault') ?: 'USD'}"/>
+            <parameter name="priceUomId" default="ec.user.getPreference('CurrencyDefault') ?: 'USD'"/>
             <parameter name="pricePurposeEnumId" default-value="PppPurchase"/>
             <parameter name="productStoreId"/><parameter name="vendorPartyId"/><parameter name="customerPartyId"/>
             <!-- TODO: to support look for records with this first and then with null: <parameter name="agreementId"/> -->
@@ -114,6 +114,31 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="listProductPriceId" from="listOut.productPriceId"/>
             <set field="listPrice" from="listOut.price"/>
 
+            <if condition="!price || !listPrice">
+                <!-- see if this is a variant of a virtual product, if so get price from virtual -->
+                <entity-find entity-name="mantle.product.ProductAssoc" list="varAssocList">
+                    <date-filter/>
+                    <econdition field-name="productAssocTypeEnumId" value="PatVariant"/>
+                    <econdition field-name="toProductId" from="productId"/>
+                </entity-find>
+                <if condition="varAssocList">
+                    <set field="virtualProductId" from="varAssocList[0].productId"/>
+                    <if condition="!price">
+                        <service-call name="mantle.product.PriceServices.get#ProductPriceByType" out-map="currentOut" out-map-add-to-existing="false"
+                                in-map="context + [productId:virtualProductId, priceTypeEnumId:'PptCurrent']"/>
+                        <set field="productPriceId" from="currentOut.productPriceId"/>
+                        <set field="price" from="currentOut.price"/>
+                    </if>
+                    <if condition="!listPrice">
+                        <service-call name="mantle.product.PriceServices.get#ProductPriceByType" out-map="listOut" out-map-add-to-existing="false"
+                                in-map="context + [productId:virtualProductId, priceTypeEnumId:'PptList']"/>
+                        <set field="listProductPriceId" from="listOut.productPriceId"/>
+                        <set field="listPrice" from="listOut.price"/>
+                    </if>
+                </if>
+            </if>
+
+            <!-- if no price default to listPrice or ZERO -->
             <if condition="!price"><set field="price" from="listPrice ?: BigDecimal.ZERO"/></if>
 
             <!-- <log level="warn" message="========== BEFORE rules productId=${productId}, price=${price}, listPrice=${listPrice}"/> -->
@@ -142,7 +167,8 @@ along with this software (see the LICENSE.md file). If not, see
         <in-parameters>
             <parameter name="productId" required="true"/>
             <parameter name="quantity" type="BigDecimal" default="1"/>
-            <parameter name="priceUomId" default-value="${ec.user.getPreference('CurrencyDefault') ?: 'USD'}"/>
+            <parameter name="priceUomId"><description>If not specified defaults to OrderHeader.currencyUomId, then
+                ProductStore.defaultCurrencyUomId, then the CurrencyDefault user preference (usually for the ALL_USERS group) then USD.</description></parameter>
             <parameter name="pricePurposeEnumId" default-value="PppPurchase"/>
 
             <parameter name="productStoreId"/><parameter name="vendorPartyId"/><parameter name="customerPartyId"/>
@@ -160,7 +186,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <set field="productStoreId" from="productStoreId ?: orderHeader?.productStoreId"/>
                 <entity-find-one entity-name="mantle.product.store.ProductStore" value-field="productStore">
                     <field-map field-name="productStoreId"/></entity-find-one>
-                <set field="priceUomId" from="(priceUomId ?: orderHeader?.currencyUomId) ?: productStore?.defaultCurrencyUomId"/>
+                <set field="priceUomId" from="priceUomId ?: orderHeader?.currencyUomId ?: productStore?.defaultCurrencyUomId ?: ec.user.getPreference('CurrencyDefault') ?: 'USD'"/>
 
                 <if condition="orderPartSeqId">
                     <entity-find-one entity-name="mantle.order.OrderPart" value-field="orderPart"/>

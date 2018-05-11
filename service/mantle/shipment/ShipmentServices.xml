@@ -702,6 +702,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="orderId" required="true"/>
             <parameter name="orderPartSeqId" required="true"/>
             <parameter name="tryAutoPackage" type="Boolean" default="true"/>
+            <parameter name="shipDate" type="Timestamp" default="ec.user.nowTimestamp"/>
         </in-parameters>
         <out-parameters>
             <parameter name="shipmentId"/>
@@ -709,12 +710,11 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <!-- create#OrderPartShipment has transaction=cache so make it not init the tx cache with transaction=use-or-begin -->
             <service-call name="mantle.shipment.ShipmentServices.create#OrderPartShipment" out-map="context"
-                    in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId, tryAutoPackage:tryAutoPackage]"/>
+                    in-map="[orderId:orderId, orderPartSeqId:orderPartSeqId, entryDate:shipDate, tryAutoPackage:tryAutoPackage]"/>
 
             <!-- pack all items (creating ShipmentPackageContent and AssetIssuance records) -->
             <entity-find entity-name="mantle.order.OrderItem" list="orderItemList">
-                <econdition field-name="orderId"/><econdition field-name="orderPartSeqId"/>
-            </entity-find>
+                <econdition field-name="orderId"/><econdition field-name="orderPartSeqId"/></entity-find>
             <iterate list="orderItemList" entry="orderItem">
                 <if condition="orderItem.productId">
                     <service-call name="mantle.shipment.ShipmentServices.pack#ShipmentProduct"
@@ -724,7 +724,7 @@ along with this software (see the LICENSE.md file). If not, see
             </iterate>
 
             <!-- set Shipment Packed -->
-            <service-call name="mantle.shipment.ShipmentServices.pack#Shipment" in-map="[shipmentId:shipmentId]"/>
+            <service-call name="mantle.shipment.ShipmentServices.pack#Shipment" in-map="[shipmentId:shipmentId, packedDate:shipDate]"/>
 
             <!-- NOTE: check order completed is done as items are packed, so by this point will be completed -->
 
@@ -743,6 +743,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="destinationFacilityId"/>
             <parameter name="tryAutoPackage" type="Boolean" default="true"/>
             <parameter name="shippingGatewayConfigId" default="ec.user.getPreference('DefaultShipmentGatewayConfigId')"/>
+            <parameter name="entryDate" type="Timestamp" default="ec.user.nowTimestamp"/>
         </in-parameters>
         <out-parameters>
             <parameter name="shipmentId"/>
@@ -777,7 +778,7 @@ along with this software (see the LICENSE.md file). If not, see
 
             <!-- create Shipment record, get shipmentId -->
             <service-call name="create#mantle.shipment.Shipment" out-map="context"
-                    in-map="[shipmentTypeEnumId:shipmentTypeEnumId, statusId:'ShipInput', entryDate:ec.user.nowTimestamp,
+                    in-map="[shipmentTypeEnumId:shipmentTypeEnumId, statusId:'ShipInput', entryDate:entryDate,
                         fromPartyId:orderPart.vendorPartyId, toPartyId:orderPart.customerPartyId,
                         systemMessageRemoteId:orderHeader.systemMessageRemoteId, handlingInstructions:orderPart.shippingInstructions,
                         otherPartyOrderId:orderPart.otherPartyOrderId]"/>
@@ -885,7 +886,7 @@ along with this software (see the LICENSE.md file). If not, see
                         in-map="[shipmentId:shipmentId, productId:orderItem.productId, statusId:'SisPending',
                             quantity:quantityNotShipped, quantityNotHandled:quantityNotShipped,
                             orderId:orderItem.orderId, orderItemSeqId:orderItem.orderItemSeqId,
-                            invoiceId:singleFullOib?.invoiceItemSeqId, invoiceId:singleFullOib?.invoiceItemSeqId]"/>
+                            invoiceId:singleFullOib?.invoiceId, invoiceItemSeqId:singleFullOib?.invoiceItemSeqId]"/>
             </iterate>
         </actions>
     </service>
@@ -1168,6 +1169,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <econdition field-name="orderId" from="sis.orderId"/>
                         <econdition field-name="orderItemSeqId" from="sis.orderItemSeqId"/>
                     </entity-find>
+                    <set field="reservedAssetIds" from="assetResList*.assetId"/>
                     <set field="curQuantityNotHandled" from="sis.quantityNotHandled"/>
                     <iterate list="assetResList" entry="assetRes">
                         <set field="resAsset" from="assetRes.asset"/>
@@ -1176,7 +1178,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <set field="geoPoint" from="facLoc?.geoPoint"/>
                         <entity-find-one entity-name="mantle.product.asset.LotAndMfgParty" value-field="lotAndMfg" cache="true">
                             <field-map field-name="lotId" from="resAsset.lotId"/></entity-find-one>
-                        <set field="assetLocInfo" from="[locationTypeEnum:facLoc?.type, lot:lotAndMfg]"/>
+                        <set field="assetLocInfo" from="[locationTypeEnum:facLoc?.type, lot:lotAndMfg, container:resAsset.container]"/>
                         <script>if (facLoc != null) assetLocInfo.putAll(facLoc)</script>
                         <script>if (geoPoint != null) assetLocInfo.putAll(geoPoint)</script>
 
@@ -1220,6 +1222,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <econdition field-name="statusId" value="AstAvailable"/>
                         <econdition field-name="availableToPromiseTotal" operator="greater" from="0"/>
                         <econdition field-name="facilityId" from="originFacility?.facilityId" ignore-if-empty="true"/>
+                        <econdition field-name="assetId" operator="not-in" from="reservedAssetIds" ignore-if-empty="true"/>
                         <order-by field-name="receivedDate"/><!-- Ascending by receivedDate, FIFO -->
                     </entity-find>
                     <!-- NOTE: these are alternate locations, reset curQuantityNotHandled for full list of recommended alternatives -->
@@ -1230,7 +1233,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <set field="geoPoint" from="facLoc?.geoPoint"/>
                         <entity-find-one entity-name="mantle.product.asset.LotAndMfgParty" value-field="lotAndMfg" cache="true">
                             <field-map field-name="lotId" from="asset.lotId"/></entity-find-one>
-                        <set field="assetLocInfo" from="[locationTypeEnum:facLoc?.type, lot:lotAndMfg]"/>
+                        <set field="assetLocInfo" from="[locationTypeEnum:facLoc?.type, lot:lotAndMfg, container:asset.container]"/>
                         <script>if (facLoc != null) assetLocInfo.putAll(facLoc)</script>
                         <script>if (geoPoint != null) assetLocInfo.putAll(geoPoint)</script>
 
